@@ -1,0 +1,17 @@
+.venv/
+.venv_win/
+node_modules/
+dist/
+data/tiles/
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+test-results/
+playwright-report/
+
+# Written by the capacity sweep on each run; the dated report is the record.
+docs/benchmarks/capacity-latest.md
+
+# Generated submission packages
+*.zip

@@ -1,0 +1,161 @@
+html, body { margin: 0; height: 100%; }
+body {
+  background: #0d0f14;
+  color: #e6e8ee;
+  font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+.top {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  background: #141821;
+  border-bottom: 1px solid #232838;
+  flex: 0 0 auto;
+}
+.switcher { display: flex; gap: 6px; flex-wrap: wrap; }
+.switcher button,
+.toolbar button {
+  background: #1d2331;
+  color: #cfd6e6;
+  border: 1px solid #2c3346;
+  border-radius: 5px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+.switcher button.active,
+.toolbar button.active { background: #2f5bd0; border-color: #3f6ee6; color: #fff; }
+.toolbar button:disabled { opacity: .4; cursor: default; }
+
+.stage { flex: 1 1 auto; display: flex; min-height: 0; }
+.canvas-holder { position: relative; flex: 1 1 auto; min-width: 0; }
+.side {
+  width: 310px;
+  flex: 0 0 310px;
+  padding: 12px;
+  overflow-y: auto;
+  background: #141821;
+  border-left: 1px solid #232838;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.toolbar { display: flex; flex-wrap: wrap; gap: 6px; }
+.toolbar .group { display: flex; gap: 6px; }
+
+.colorby select {
+  background: #10141d;
+  color: #e6e8ee;
+  border: 1px solid #2c3346;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font: inherit;
+  margin-left: 4px;
+}
+
+.legend-row { display: grid; grid-template-columns: 12px 1fr auto; gap: 6px; align-items: center; }
+.legend-row i { width: 10px; height: 10px; border-radius: 2px; display: block; }
+.legend-title, .lod-readout, .summary-head { font-weight: 600; }
+.legend-more, .muted, .summary-empty { color: #8b94a8; font-weight: 400; }
+.ramp {
+  height: 10px;
+  border-radius: 3px;
+  margin-top: 4px;
+  background: linear-gradient(90deg, #440154, #31688e, #35b779, #fde725);
+}
+.ramp-labels { display: flex; justify-content: space-between; color: #8b94a8; }
+
+.lod { display: flex; flex-direction: column; gap: 4px; }
+.lod input[type=range] { width: 100%; }
+
+.sum-row { display: flex; justify-content: space-between; }
+.sum-block h4 { margin: 8px 0 2px; font-size: 12px; color: #8b94a8; font-weight: 600; }
+
+.graph-controls { display: flex; flex-direction: column; gap: 3px; }
+
+.chat { display: flex; flex-direction: column; gap: 6px; margin-top: auto; }
+.chat-head { font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+.chat-badge { font-weight: 400; color: #8b94a8; font-size: 11px; }
+.chat-log { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.msg { padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
+.msg.user { background: #223055; align-self: flex-end; max-width: 90%; }
+.msg.assistant { background: #1a1f2b; }
+.msg.error { background: #3a1d22; color: #ffc9d0; }
+.chat-input { display: flex; gap: 6px; }
+.chat-input textarea {
+  flex: 1;
+  resize: vertical;
+  background: #10141d;
+  color: #e6e8ee;
+  border: 1px solid #2c3346;
+  border-radius: 5px;
+  padding: 6px;
+  font: inherit;
+}
+.chat-input button {
+  background: #2f5bd0;
+  color: #fff;
+  border: 0;
+  border-radius: 5px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font: inherit;
+}
+.chat-input button:disabled { opacity: .4; cursor: default; }
+
+#status {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, .6);
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+/* Capacity sweep page */
+.bench { padding: 20px 24px; max-width: 1100px; }
+.bench h1 { font-size: 20px; margin: 0 0 6px; }
+.bench p { max-width: 70ch; }
+.bench button {
+  background: #2f5bd0;
+  color: #fff;
+  border: 0;
+  border-radius: 5px;
+  padding: 7px 14px;
+  cursor: pointer;
+  font: inherit;
+}
+.bench pre {
+  background: #141821;
+  border: 1px solid #232838;
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+}
+
+.tooltip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  background: rgba(12, 15, 22, .94);
+  border: 1px solid #2c3346;
+  border-radius: 6px;
+  padding: 7px 9px;
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 2px 12px;
+  max-width: 260px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+}
+/* `display: grid` above outranks the user-agent `[hidden] { display: none }`,
+   so hiding the tooltip has to be stated explicitly or an empty box sits on
+   the canvas permanently. */
+.tooltip[hidden] { display: none; }
+.tooltip b { grid-column: 1 / -1; margin-bottom: 2px; }
+.tooltip span { color: #8b94a8; }
+.tooltip i { font-style: normal; text-align: right; }
+.render-control { display: flex; flex-direction: column; gap: 3px; }

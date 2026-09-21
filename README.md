@@ -7,9 +7,7 @@ cells you selected.
 Two displays share one engine:
 
 - **Embedding view** — a UMAP or t-SNE scatter plot, one dot per cell, coloured
-  by cell type, tissue, donor or developmental stage. The reference point is
-  Figure 1 of *Nicheformer* (Nature Methods 22:2525–2538, 2025), whose UMAP
-  panel plots 1,108,759 cells.
+  by cell type, tissue, donor or developmental stage.
 - **Trajectory view** — the same point cloud coloured by pseudotime, with a
   monocle3-style principal graph drawn over it: root marker, branch points,
   leaves, and the lineage paths between them.

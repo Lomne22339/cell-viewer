@@ -9,14 +9,7 @@ export interface GraphMarker {
   kind: 'root' | 'branch' | 'leaf';
 }
 
-/**
- * Merges the principal graph's edge list into polylines.
- *
- * A monocle3 graph is a few hundred to a few thousand edges. Handing deck.gl
- * one two-point path per edge draws visible seams at every joint and costs a
- * draw-call setup per segment; merging runs between branch points gives
- * continuous strokes that read as lineages.
- */
+/** Merges edges into polylines between branch points, so deck.gl draws seamless strokes. */
 export function graphPaths(graph: PrincipalGraph): GraphPath[] {
   const m = graph.nodes.length;
   if (m === 0 || graph.edges.length === 0) return [];
@@ -36,9 +29,7 @@ export function graphPaths(graph: PrincipalGraph): GraphPath[] {
     const path: [number, number][] = [graph.nodes[start]];
     let node = start;
     let edge = firstEdge;
-    // Follow the run until it hits a branch point, a leaf, or an edge we
-    // already drew. The `used` guard is also what stops a cycle from
-    // spinning forever.
+    // The `used` guard also stops a cycle from spinning forever.
     while (!used[edge]) {
       used[edge] = 1;
       node = other(edge, node);
@@ -51,12 +42,10 @@ export function graphPaths(graph: PrincipalGraph): GraphPath[] {
     if (path.length > 1) paths.push({ path });
   };
 
-  // Start from every junction and endpoint first, so runs are maximal.
   for (let n = 0; n < m; n++) {
     if (adj[n].length === 2) continue;
     for (const e of adj[n]) if (!used[e]) walk(n, e);
   }
-  // Anything left is a pure cycle with no junction to start from.
   for (let e = 0; e < graph.edges.length; e++) {
     if (!used[e]) walk(graph.edges[e][0], e);
   }

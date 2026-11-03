@@ -5,14 +5,7 @@ export interface ColorChoice {
   kind: 'categorical' | 'numeric';
 }
 
-/**
- * The field a dataset should open coloured by.
- *
- * A dataset is not required to have any categorical annotation — a Parquet
- * file of `x, y, pseudotime` is perfectly valid — and picking a categorical
- * field unconditionally leaves such a dataset with no colour written at all,
- * which renders as a blank canvas rather than as an error.
- */
+/** The field a dataset opens colored by, or null when it has no categorical annotation. */
 export function defaultColorField(store: CellStore): ColorChoice | null {
   const categorical = store.categoricalFields()[0];
   if (categorical) return { field: categorical, kind: 'categorical' };

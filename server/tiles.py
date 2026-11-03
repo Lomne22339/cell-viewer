@@ -1,24 +1,23 @@
-"""Binary tile routes.
-
-Dataset ids and field names arrive from the URL and are used to build
-filesystem paths, so both are validated against a strict pattern before
-they touch the disk. Concatenating unvalidated path segments is how a
-tile server becomes a file-read primitive.
-"""
+"""Tile routes and per-cell lookup; ids and field names are validated before they touch the disk."""
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
+import numpy as np
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+from .names import SAFE_NAME
+
+__all__ = ["SAFE_NAME", "router"]
+
+_mapped: dict[str, tuple[str, np.ndarray | None]] = {}
 
 
 def _safe(name: str) -> str:
-    if not SAFE_NAME.match(name):
+    # fullmatch, not match: with match a trailing newline slipped through.
+    if not SAFE_NAME.fullmatch(name):
         raise HTTPException(status_code=400, detail="invalid name")
     return name
 
@@ -31,6 +30,7 @@ def _dataset_root(request: Request, dataset_id: str) -> Path:
 
 
 def _send_binary(path: Path) -> Response:
+    # Immutable caching is safe: the page fetches `?v=<manifest version>`; the route ignores `v`.
     if not path.is_file():
         raise HTTPException(status_code=404, detail="no such chunk")
     return Response(
@@ -38,6 +38,21 @@ def _send_binary(path: Path) -> Response:
         media_type="application/octet-stream",
         headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )
+
+
+def _open_column(path: str, version: str) -> np.ndarray | None:
+    hit = _mapped.get(path)
+    if hit is not None and hit[0] == version:
+        return hit[1]
+    p = Path(path)
+    arr = np.load(p, mmap_mode="r", allow_pickle=False) if p.is_file() else None
+    _mapped[path] = (version, arr)
+    return arr
+
+
+def _cell_file(root: Path, name: str, version: str, n: int) -> np.ndarray | None:
+    arr = _open_column(str(root / "cells" / name), version)
+    return arr if arr is not None and arr.shape == (n,) else None
 
 
 router = APIRouter(prefix="/api")
@@ -67,6 +82,25 @@ def graph(request: Request, dataset_id: str) -> JSONResponse:
     if not path.is_file():
         raise HTTPException(status_code=404, detail="dataset has no principal graph")
     return JSONResponse(json.loads(path.read_text()))
+
+
+@router.get("/dataset/{dataset_id}/cell/{index}")
+def cell(request: Request, dataset_id: str, index: int, v: str | None = None) -> JSONResponse:
+    """A cell's name and source row; `v` is the page's manifest version (a stale one gets 409)."""
+    root = _dataset_root(request, dataset_id)
+    man = json.loads((root / "manifest.json").read_text())
+    n = int(man["n"])
+    version = str(man.get("version", ""))
+    if v is not None and v != version:
+        raise HTTPException(status_code=409, detail="dataset changed since the page loaded; reload")
+    if not 0 <= index < n:
+        raise HTTPException(status_code=404, detail="no such cell")
+    rows = _cell_file(root, "rows.npy", version, n)
+    if rows is None:
+        return JSONResponse({"index": index, "row": None, "id": None})
+    ids = _cell_file(root, "ids.npy", version, n) if man.get("cellIds") else None
+    name = None if ids is None else bytes(ids[index]).decode("utf-8", errors="replace")
+    return JSONResponse({"index": index, "row": int(rows[index]), "id": name})
 
 
 @router.get("/dataset/{dataset_id}/chunk/xy/{chunk}")

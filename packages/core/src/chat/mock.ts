@@ -5,64 +5,72 @@ const MAX_LEVELS_SHOWN = 12;
 
 function topLevels(counts: Record<string, number>): { label: string; count: number }[] {
   return Object.entries(counts)
+    .filter(([, count]) => typeof count === 'number' && Number.isFinite(count))
     .sort((a, b) => b[1] - a[1])
     .map(([label, count]) => ({ label, count }));
 }
 
-/**
- * The prompt block describing a selection.
- *
- * Shared by the mock adapter and mirrored exactly by the server proxy, so
- * both see the same description of the selection; if they diverged, testing
- * against the mock would stop telling you anything about the real path.
- */
+/** `toFixed`, or `n/a` for a missing or non-finite value (a NaN travels as null in JSON). */
+function fixed(value: unknown, digits: number): string {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : 'n/a';
+}
+
+/** Prompt block for a selection. Mirrors `render_context_as_text` in server/chat.py: keep in step. */
 export function renderContextAsText(ctx: SelectionContext | null): string {
-  if (!ctx || ctx.n === 0) {
+  if (!ctx || !(ctx.n > 0)) {
     return 'No cells are currently selected in the viewer.';
   }
+  const visibleN = ctx.visibleN ?? ctx.totalN;
+  const filtered = visibleN < ctx.totalN;
+  const bbox = ctx.bbox ?? [];
+  const centroid = ctx.centroid ?? [];
   const lines: string[] = [
-    `Selection from dataset "${ctx.datasetId}" (${ctx.view} view).`,
-    `${ctx.n.toLocaleString('en-US')} cells selected out of ${ctx.totalN.toLocaleString('en-US')} total ` +
-      `(${((ctx.n / ctx.totalN) * 100).toFixed(2)}%).`,
-    `Region: x ${ctx.bbox[0].toFixed(2)} to ${ctx.bbox[2].toFixed(2)}, ` +
-      `y ${ctx.bbox[1].toFixed(2)} to ${ctx.bbox[3].toFixed(2)}; ` +
-      `centroid (${ctx.centroid[0].toFixed(2)}, ${ctx.centroid[1].toFixed(2)}).`,
-    `Currently coloured by: ${ctx.colorBy}.`,
-    ''
+    `Selection from dataset "${ctx.datasetId ?? '?'}" (${ctx.view ?? 'embedding'} view).`,
+    filtered
+      ? `${ctx.n.toLocaleString('en-US')} cells selected out of ${visibleN.toLocaleString('en-US')} visible ` +
+        `(${ctx.totalN.toLocaleString('en-US')} total; ${fixed((ctx.n / Math.max(1, visibleN)) * 100, 2)}% of visible).`
+      : `${ctx.n.toLocaleString('en-US')} cells selected out of ${ctx.totalN.toLocaleString('en-US')} total ` +
+        `(${fixed((ctx.n / ctx.totalN) * 100, 2)}%).`,
+    `Region: x ${fixed(bbox[0], 2)} to ${fixed(bbox[2], 2)}, ` +
+      `y ${fixed(bbox[1], 2)} to ${fixed(bbox[3], 2)}; ` +
+      `centroid (${fixed(centroid[0], 2)}, ${fixed(centroid[1], 2)}).`,
+    `Currently colored by: ${ctx.colorBy ?? '?'}.`
   ];
+  for (const [field, labels] of Object.entries(ctx.hidden ?? {})) {
+    if (!labels.length) continue;
+    const shown = labels.slice(0, MAX_LEVELS_SHOWN).join(', ');
+    const more = labels.length > MAX_LEVELS_SHOWN ? ` and ${labels.length - MAX_LEVELS_SHOWN} more` : '';
+    lines.push(`Legend filter hides ${field}: ${shown}${more}.`);
+  }
+  lines.push('');
 
-  for (const [field, counts] of Object.entries(ctx.breakdown)) {
-    const levels = topLevels(counts);
+  for (const [field, counts] of Object.entries(ctx.breakdown ?? {})) {
+    const levels = topLevels(counts ?? {});
     if (levels.length === 0) continue;
     lines.push(`${field} composition:`);
     for (const { label, count } of levels.slice(0, MAX_LEVELS_SHOWN)) {
-      lines.push(
-        `  ${label}: ${count.toLocaleString('en-US')} (${((count / ctx.n) * 100).toFixed(1)}%)`
-      );
+      lines.push(`  ${label}: ${count.toLocaleString('en-US')} (${fixed((count / ctx.n) * 100, 1)}%)`);
     }
-    if (levels.length > MAX_LEVELS_SHOWN) {
-      lines.push(`  ... and ${levels.length - MAX_LEVELS_SHOWN} more levels`);
-    }
+    const omitted = ctx.omittedLevels?.[field];
+    const more =
+      Math.max(0, levels.length - MAX_LEVELS_SHOWN) +
+      (typeof omitted === 'number' && Number.isFinite(omitted) ? omitted : 0);
+    if (more > 0) lines.push(`  ... and ${more} more levels`);
     lines.push('');
   }
 
-  for (const [field, s] of Object.entries(ctx.numericStats)) {
+  for (const [field, stats] of Object.entries(ctx.numericStats ?? {})) {
+    const s: Partial<SelectionContext['numericStats'][string]> = stats ?? {};
+    const q = s.q ?? [];
     lines.push(
-      `${field}: min ${s.min.toFixed(3)}, q1 ${s.q[0].toFixed(3)}, median ${s.q[1].toFixed(3)}, ` +
-        `q3 ${s.q[2].toFixed(3)}, max ${s.max.toFixed(3)}, mean ${s.mean.toFixed(3)}`
+      `${field}: min ${fixed(s.min, 3)}, q1 ${fixed(q[0], 3)}, median ${fixed(q[1], 3)}, ` +
+        `q3 ${fixed(q[2], 3)}, max ${fixed(s.max, 3)}, mean ${fixed(s.mean, 3)}`
     );
   }
-  lines.push('', `Example cell ids: ${ctx.sampleIds.slice(0, 8).join(', ')}`);
+  lines.push('', `Example cell ids: ${(ctx.sampleIds ?? []).slice(0, 8).join(', ')}`);
   return lines.join('\n');
 }
 
-/**
- * Answers from the context alone, with no network and no key.
- *
- * This exists so the entire selection-to-answer path can be exercised in
- * tests and offline development. It is a lookup over the summary, not a
- * model, and it says so.
- */
 export class MockAdapter implements ChatAdapter {
   readonly name = 'mock';
 
@@ -73,7 +81,6 @@ export class MockAdapter implements ChatAdapter {
     _signal?: AbortSignal
   ): AsyncIterable<string> {
     const answer = this.answer(ctx, question);
-    // Stream in word groups so the panel's streaming path is exercised.
     const words = answer.split(' ');
     for (let i = 0; i < words.length; i += 6) {
       yield words.slice(i, i + 6).join(' ') + (i + 6 < words.length ? ' ' : '');
@@ -114,13 +121,12 @@ export class MockAdapter implements ChatAdapter {
     if (/pseudotime|trajectory|time|stage|develop/.test(q)) {
       const s = ctx.numericStats.pseudotime;
       return s
-        ? `Pseudotime across the selection runs ${s.min.toFixed(3)} to ${s.max.toFixed(3)} ` +
-            `with a median of ${s.q[1].toFixed(3)}.`
+        ? `Pseudotime across the selection runs ${fixed(s.min, 3)} to ${fixed(s.max, 3)} ` +
+            `with a median of ${fixed(s.q?.[1], 3)}.`
         : 'This dataset has no pseudotime values.';
     }
-    // Fall through to the full summary rather than pretending to reason.
     return (
-      '[mock adapter — no model is connected] Here is what the viewer knows about ' +
+      '[mock adapter: no model is connected] Here is what the viewer knows about ' +
       `your selection:\n\n${renderContextAsText(ctx)}`
     );
   }

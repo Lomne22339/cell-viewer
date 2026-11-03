@@ -1,23 +1,15 @@
-import type { QueryShape, WorkerReply } from './worker';
+import type { NearestQuery, QueryShape, WorkerReply } from './worker';
 
-/**
- * Main-thread handle on the selection worker.
- *
- * The coordinate array is copied into the worker once at init. That costs
- * one 8 MB copy per million cells and buys a selection path that never
- * touches the main thread again, so panning stays smooth while a lasso
- * query runs.
- */
+/** Main-thread handle on the selection worker. */
 export class SelectionClient {
   private worker: Worker;
   private nextId = 1;
   private pending = new Map<
     number,
-    { resolve: (v: Uint32Array) => void; reject: (e: Error) => void }
+    { resolve: (v: Uint32Array) => void; reject: (e: Error) => void; timed: boolean }
   >();
   private readyPromise: Promise<void>;
   private markReady!: () => void;
-  /** Milliseconds taken by the most recent query, for the benchmark page. */
   lastQueryMs = 0;
   private initializedCount = -1;
 
@@ -34,8 +26,9 @@ export class SelectionClient {
         return;
       }
       if (msg.type === 'result') {
-        this.lastQueryMs = msg.ms;
-        this.pending.get(msg.id)?.resolve(msg.indices);
+        const p = this.pending.get(msg.id);
+        if (p?.timed) this.lastQueryMs = msg.ms;
+        p?.resolve(msg.indices);
         this.pending.delete(msg.id);
         return;
       }
@@ -50,25 +43,14 @@ export class SelectionClient {
     };
   }
 
-  /**
-   * Sends a copy of the coordinates; the caller keeps its own array.
-   *
-   * At ten million cells this copy is eighty megabytes, so it must not happen
-   * once per arriving chunk — forty chunks would move three gigabytes for no
-   * benefit. `ensure` below is the entry point callers should use; it copies
-   * only when the loaded prefix has actually grown since the last time.
-   */
   init(xy: Float32Array, count: number): Promise<void> {
-    // Only the loaded prefix is worth sending. `xy` is allocated at full size
-    // from the start, so copying all of it during the first chunk of a
-    // ten-million-cell load would move eighty megabytes of zeroes.
+    // Send only [0, count): xy is allocated at full size and the rest is unwritten.
     const copy = xy.slice(0, Math.max(0, count) * 2);
     this.initializedCount = count;
     this.worker.postMessage({ type: 'init', xy: copy.buffer, count }, [copy.buffer]);
     return this.readyPromise;
   }
 
-  /** Re-sends coordinates only if more of them have arrived. */
   ensure(xy: Float32Array, count: number): Promise<void> {
     if (count === this.initializedCount) return this.readyPromise;
     return this.init(xy, count);
@@ -78,8 +60,18 @@ export class SelectionClient {
     await this.readyPromise;
     const id = this.nextId++;
     return new Promise<Uint32Array>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { resolve, reject, timed: true });
       this.worker.postMessage({ type: 'query', id, shape, count });
+    });
+  }
+
+  /** Click lookup: cells near a world-space point, nearest first. Point layers are not pickable. */
+  async nearest(near: NearestQuery, count: number): Promise<Uint32Array> {
+    await this.readyPromise;
+    const id = this.nextId++;
+    return new Promise<Uint32Array>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject, timed: false });
+      this.worker.postMessage({ type: 'nearest', id, near, count });
     });
   }
 

@@ -1,13 +1,22 @@
 import { buildGrid, type UniformGrid } from '../index/grid';
-import { selectPolygon, selectRect } from './query';
+import { nearestPoints, selectPolygon, selectRect } from './query';
 
 export type QueryShape =
   | { kind: 'poly'; poly: Float64Array }
   | { kind: 'rect'; rect: [number, number, number, number] };
 
+export interface NearestQuery {
+  x: number;
+  y: number;
+  /** World units. */
+  radius: number;
+  k: number;
+}
+
 export type WorkerRequest =
   | { type: 'init'; xy: ArrayBufferLike; count: number }
-  | { type: 'query'; id: number; shape: QueryShape; count: number };
+  | { type: 'query'; id: number; shape: QueryShape; count: number }
+  | { type: 'nearest'; id: number; near: NearestQuery; count: number };
 
 export type WorkerReply =
   | { type: 'ready' }
@@ -24,10 +33,7 @@ export function createWorkerState(): WorkerState {
   return { xy: null, grid: null, count: 0 };
 }
 
-/**
- * Pure message handler, kept separate from the Worker global so it can be
- * tested in Node. The worker entry below is a thin shim over it.
- */
+/** Pure message handler, separate from the Worker global so it runs in Node. */
 export function handleMessage(
   state: WorkerState,
   msg: WorkerRequest
@@ -43,10 +49,6 @@ export function handleMessage(
     return { reply: { type: 'error', id: msg.id, message: 'query before init' }, transfer: [] };
   }
 
-  // A query can name more cells than were sent — the caller is meant to
-  // re-send first, but the worker must not read past its own buffer if it
-  // does not. Clamp to what is actually here, and rebuild the index if the
-  // prefix has grown.
   const available = state.xy.length / 2;
   const count = Math.min(msg.count, available);
   if (count > state.count) {
@@ -55,10 +57,16 @@ export function handleMessage(
   }
 
   const t0 = performance.now();
-  const indices =
-    msg.shape.kind === 'poly'
-      ? selectPolygon(state.xy, count, msg.shape.poly, state.grid)
-      : selectRect(state.xy, count, msg.shape.rect, state.grid);
+  let indices: Uint32Array;
+  if (msg.type === 'nearest') {
+    const { x, y, radius, k } = msg.near;
+    indices = nearestPoints(state.xy, count, x, y, radius, k, state.grid);
+  } else {
+    indices =
+      msg.shape.kind === 'poly'
+        ? selectPolygon(state.xy, count, msg.shape.poly, state.grid)
+        : selectRect(state.xy, count, msg.shape.rect, state.grid);
+  }
   const ms = performance.now() - t0;
 
   return {
@@ -67,8 +75,26 @@ export function handleMessage(
   };
 }
 
-// Worker entry. The canonical worker check, so importing this module in Node
-// (for the protocol tests) or on the main thread is inert.
+function requestId(msg: unknown): number | undefined {
+  const id = (msg as { id?: unknown } | null)?.id;
+  return typeof id === 'number' ? id : undefined;
+}
+
+function errorReply(msg: unknown, err: unknown): WorkerReply {
+  return { type: 'error', id: requestId(msg), message: err instanceof Error ? err.message : String(err) };
+}
+
+export function respond(
+  state: WorkerState,
+  msg: WorkerRequest
+): { reply: WorkerReply; transfer: Transferable[] } {
+  try {
+    return handleMessage(state, msg);
+  } catch (err) {
+    return { reply: errorReply(msg, err), transfer: [] };
+  }
+}
+
 const scope = globalThis as unknown as { WorkerGlobalScope?: unknown };
 const isWorker =
   typeof scope.WorkerGlobalScope !== 'undefined' &&
@@ -80,14 +106,11 @@ if (isWorker) {
     ev: MessageEvent<WorkerRequest>
   ): void => {
     const self = scope as unknown as DedicatedWorkerGlobalScope;
+    const { reply, transfer } = respond(state, ev.data);
     try {
-      const { reply, transfer } = handleMessage(state, ev.data);
       self.postMessage(reply, transfer);
     } catch (err) {
-      self.postMessage({
-        type: 'error',
-        message: err instanceof Error ? err.message : String(err)
-      } satisfies WorkerReply);
+      self.postMessage(errorReply(ev.data, err));
     }
   };
 }

@@ -1,17 +1,19 @@
-.venv/
-.venv_win/
+# Dependencies
 node_modules/
+.venv/
+
+# Build output
 dist/
+
+# Generated datasets
 data/tiles/
+
+# Environment
 .env
+
+# Python
 __pycache__/
 *.pyc
-.pytest_cache/
-test-results/
-playwright-report/
 
-# Written by the capacity sweep on each run; the dated report is the record.
-docs/benchmarks/capacity-latest.md
-
-# Generated submission packages
-*.zip
+# OS
+.DS_Store

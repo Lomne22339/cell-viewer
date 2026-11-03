@@ -7,6 +7,9 @@ export interface Manifest {
   categorical: Record<string, { levels: string[] }>;
   numeric: Record<string, { min: number; max: number }>;
   hasGraph: boolean;
+  /** Changes on every re-prepare; appended to chunk URLs so stale cached chunks are never reused. */
+  version?: string;
+  cellIds?: boolean;
 }
 
 export interface PrincipalGraph {

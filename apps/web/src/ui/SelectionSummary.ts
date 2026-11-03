@@ -28,11 +28,15 @@ export function createSelectionSummary(root: HTMLElement): SummaryHandle {
         .slice(0, 2)
         .map(f => `<div class="sum-block"><h4>${esc(f)}</h4>${top(f)}</div>`)
         .join('');
-      const pct = ((ctx.n / ctx.totalN) * 100).toFixed(1);
+      const visible = ctx.visibleN ?? ctx.totalN;
+      const filtered = visible < ctx.totalN;
+      const pct = ((ctx.n / Math.max(1, visible)) * 100).toFixed(1);
+      const of = filtered
+        ? `${pct}% of ${visible.toLocaleString()} visible`
+        : `${pct}% of ${ctx.totalN.toLocaleString()}`;
       box.innerHTML =
         `<div class="summary-head">${ctx.n.toLocaleString()} cells selected` +
-        `<span class="muted"> (${pct}% of ${ctx.totalN.toLocaleString()}, ` +
-        `${queryMs.toFixed(1)} ms)</span></div>${blocks}`;
+        `<span class="muted"> (${of}, ${queryMs.toFixed(1)} ms)</span></div>${blocks}`;
     }
   };
 }

@@ -1,10 +1,7 @@
 import type { SelectionContext } from '@core/context/build';
 import type { ChatAdapter, Turn } from '@core/chat/adapter';
 
-/**
- * Talks to the server proxy, which holds the API key. Nothing in this file
- * knows a credential, and nothing here should ever learn one.
- */
+/** Talks to the server proxy, which holds the API key; nothing here may ever learn one. */
 export class ClaudeAdapter implements ChatAdapter {
   readonly name = 'claude';
 
@@ -44,8 +41,7 @@ export class ClaudeAdapter implements ChatAdapter {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      // SSE events are separated by a blank line, and a network chunk can
-      // split one, so only complete events are consumed and the tail kept.
+      // A network chunk can split an SSE event (they end at a blank line): keep the tail.
       const events = buffer.split('\n\n');
       buffer = events.pop() ?? '';
       for (const event of events) {

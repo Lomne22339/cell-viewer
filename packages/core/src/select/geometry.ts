@@ -1,15 +1,7 @@
 /** Flat `[x0,y0,x1,y1,...]`, implicitly closed. */
 export type Polygon = Float64Array;
 
-/**
- * Crossing-number point-in-polygon.
- *
- * The `(yi > py) !== (yj > py)` guard is what makes vertices lying exactly
- * on the test ray count once rather than twice; the naive `>=` form
- * double-counts them and produces holes along horizontal edges. Points on a
- * boundary are classified consistently but arbitrarily, which is fine for a
- * hand-drawn lasso.
- */
+/** Crossing-number test; the `(yi > py) !== (yj > py)` guard stops vertices counting twice. */
 export function pointInPolygon(px: number, py: number, poly: Polygon): boolean {
   const v = poly.length / 2;
   if (v < 3) return false;
@@ -54,15 +46,6 @@ export function normalizeRect(
   ];
 }
 
-/**
- * Ramer–Douglas–Peucker.
- *
- * A freehand drag emits a point per pointer event, so a lasso around a
- * large region arrives with several hundred nearly collinear vertices.
- * Every one of them costs a segment test per candidate point, and candidate
- * points number in the hundreds of thousands, so simplifying the path first
- * is the difference between a 10 ms query and a 200 ms one.
- */
 export function simplifyPath(points: number[], tolerancePx: number): number[] {
   const n = points.length / 2;
   if (n < 3) return points.slice();

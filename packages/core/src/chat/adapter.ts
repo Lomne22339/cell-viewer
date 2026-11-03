@@ -5,13 +5,7 @@ export interface Turn {
   text: string;
 }
 
-/**
- * Every chat backend implements this and nothing else.
- *
- * The panel talks only to this interface, so an offline mock, a Claude
- * proxy, or something else entirely are interchangeable without the UI
- * knowing which one it has.
- */
+/** The only interface a chat backend implements; the panel never knows which one it has. */
 export interface ChatAdapter {
   readonly name: string;
   send(

@@ -1,14 +1,7 @@
 import type { SelectionContext } from '@core/context/build';
 import type { ChatAdapter, Turn } from '@core/chat/adapter';
 
-/**
- * The chat panel holds no selection state of its own; it is handed a context
- * whenever the selection changes and keeps only the conversation.
- *
- * Message bodies are set with textContent, never innerHTML: they contain a
- * model's output and a user's typing, neither of which should be able to
- * inject markup into the page.
- */
+/** Holds only the conversation. Bodies use textContent, never innerHTML (model output, user text). */
 export class ChatPanel {
   private history: Turn[] = [];
   private ctx: SelectionContext | null = null;
@@ -49,12 +42,11 @@ export class ChatPanel {
     });
   }
 
-  /** Called by the view whenever the selection changes. */
   setContext(ctx: SelectionContext | null): void {
     this.ctx = ctx;
     const has = !!ctx && ctx.n > 0;
     this.input.disabled = !has;
-    this.sendBtn.disabled = !has;
+    this.sendBtn.disabled = !has || this.inFlight !== null;
     this.input.placeholder = has
       ? 'Ask about these cells…'
       : 'Select cells first, then ask a question…';
@@ -75,7 +67,9 @@ export class ChatPanel {
     if (!question || this.sendBtn.disabled) return;
     this.input.value = '';
     this.append('user', question);
-    this.history.push({ role: 'user', text: question });
+    const turn: Turn = { role: 'user', text: question };
+    const prior = this.history.slice();
+    this.history.push(turn);
 
     const bubble = this.append('assistant', '');
     this.sendBtn.disabled = true;
@@ -85,18 +79,20 @@ export class ChatPanel {
 
     let answer = '';
     try {
-      const stream = this.adapter.send(this.ctx, question, this.history.slice(0, -1), ac.signal);
+      const stream = this.adapter.send(this.ctx, question, prior, ac.signal);
       for await (const chunk of stream) {
+        if (ac.signal.aborted) break;
         answer += chunk;
         bubble.textContent = answer;
         this.log.scrollTop = this.log.scrollHeight;
       }
-      this.history.push({ role: 'assistant', text: answer });
+      if (ac.signal.aborted) throw new DOMException('superseded', 'AbortError');
+      this.history.splice(this.history.indexOf(turn) + 1, 0, { role: 'assistant', text: answer });
     } catch (err) {
       bubble.remove();
-      this.history.pop();
-      // Asking a second question aborts the first. That is the user's own
-      // doing, so it must not surface as a failure.
+      const at = this.history.indexOf(turn);
+      if (at >= 0) this.history.splice(at, 1);
+      // Asking a second question aborts the first; that is not a failure.
       if (!ac.signal.aborted) {
         this.append(
           'error',
@@ -104,8 +100,10 @@ export class ChatPanel {
         );
       }
     } finally {
-      this.inFlight = null;
-      this.sendBtn.disabled = !this.ctx || this.ctx.n === 0;
+      if (this.inFlight === ac) {
+        this.inFlight = null;
+        this.sendBtn.disabled = !this.ctx || this.ctx.n === 0;
+      }
     }
   }
 

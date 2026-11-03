@@ -3,6 +3,7 @@ import type { Mode } from '../interact/lasso';
 export interface ToolbarHandle {
   setMode: (m: Mode) => void;
   setSelectionActive: (on: boolean) => void;
+  setInsetActive: (on: boolean) => void;
 }
 
 export function createToolbar(
@@ -12,6 +13,7 @@ export function createToolbar(
     onZoomToSelection: () => void;
     onClear: () => void;
     onResetView: () => void;
+    onInset: () => void;
   }
 ): ToolbarHandle {
   const bar = document.createElement('div');
@@ -24,7 +26,9 @@ export function createToolbar(
     </div>
     <button data-act="zoom" disabled title="Zoom to the selected region">Zoom to selection</button>
     <button data-act="clear" disabled>Clear</button>
-    <button data-act="reset">Reset view</button>`;
+    <button data-act="reset">Reset view</button>
+    <button data-act="inset" aria-pressed="false"
+      title="Foreground inset: a magnified region, an overview, or the anatomy figure">Inset</button>`;
   root.appendChild(bar);
 
   const modeButtons = [...bar.querySelectorAll<HTMLButtonElement>('button[data-mode]')];
@@ -41,12 +45,18 @@ export function createToolbar(
   bar
     .querySelector<HTMLButtonElement>('[data-act="reset"]')!
     .addEventListener('click', handlers.onResetView);
+  const insetBtn = bar.querySelector<HTMLButtonElement>('[data-act="inset"]')!;
+  insetBtn.addEventListener('click', handlers.onInset);
 
   return {
     setMode,
     setSelectionActive: (on: boolean) => {
       zoomBtn.disabled = !on;
       clearBtn.disabled = !on;
+    },
+    setInsetActive: (on: boolean) => {
+      insetBtn.classList.toggle('active', on);
+      insetBtn.setAttribute('aria-pressed', String(on));
     }
   };
 }

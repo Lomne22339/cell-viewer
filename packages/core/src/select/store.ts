@@ -4,15 +4,14 @@ export interface Selection {
   indices: Uint32Array;
   mask: Uint8Array;
   bbox: [number, number, number, number];
-  shape: 'poly' | 'rect';
+  shape: SelectionShape;
 }
+
+export type SelectionShape = 'poly' | 'rect' | 'segment';
 
 export type SelectionListener = (sel: Selection | null) => void;
 
-/**
- * The single place selection state lives. The canvas, the summary panel and
- * the chat panel all read from here and none of them reach into each other.
- */
+/** The single owner of selection state; other modules subscribe instead of reaching in. */
 export class SelectionStore {
   private listeners = new Set<SelectionListener>();
   current: Selection | null = null;
@@ -29,7 +28,7 @@ export class SelectionStore {
     };
   }
 
-  set(indices: Uint32Array, shape: 'poly' | 'rect'): void {
+  set(indices: Uint32Array, shape: SelectionShape): void {
     if (indices.length === 0) {
       this.clear();
       return;
@@ -62,8 +61,7 @@ export class SelectionStore {
   }
 
   private emit(): void {
-    // A listener that throws must not silence the ones after it; a broken
-    // chat panel should not also break the legend.
+    // A throwing listener must not silence the ones after it.
     for (const fn of this.listeners) {
       try {
         fn(this.current);

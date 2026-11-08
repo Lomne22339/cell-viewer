@@ -2,10 +2,22 @@ import type { CellStore } from '../data/schema';
 
 export type FilterListener = () => void;
 
-/** Hidden levels per field, one byte per level (never per cell); filters belong to their field. */
+/**
+ * Which categorical levels are hidden, per field — the state behind a
+ * Plotly-style interactive legend.
+ *
+ * Filters belong to their field, not to the colour-by: hiding every cell type
+ * but T cells and then colouring by tissue keeps the T-cell filter, which is
+ * how a user asks "which tissues do my T cells come from". Several fields can
+ * be filtered at once; a cell is visible only if every filter admits it.
+ *
+ * State is one byte per level, never per cell. The per-cell mask is derived
+ * on demand by `computeVisibility`.
+ */
 export class CategoryFilter {
   private hidden = new Map<string, Uint8Array>();
   private listeners = new Set<FilterListener>();
+  /** Bumped on every change, so consumers can cheaply detect staleness. */
   version = 0;
 
   constructor(private levels: ReadonlyMap<string, readonly string[]>) {}
@@ -32,13 +44,17 @@ export class CategoryFilter {
     return out;
   }
 
+  /** Plotly `itemclick: "toggle"`. */
   toggle(field: string, code: number): void {
     const t = this.table(field);
     t[code] = t[code] ? 0 : 1;
     this.changed();
   }
 
-  /** Plotly `itemdoubleclick: "toggleothers"`: show only this level, or all if it already is alone. */
+  /**
+   * Plotly `itemdoubleclick: "toggleothers"`: show only this level, or — if it
+   * already is the only one showing — show everything again.
+   */
   isolate(field: string, code: number): void {
     const t = this.table(field);
     let othersAllHidden = !t[code];
@@ -58,6 +74,7 @@ export class CategoryFilter {
     this.changed();
   }
 
+  /** Hides exactly `codes` for this field and shows the rest. */
   setHidden(field: string, codes: Iterable<number>): void {
     const t = this.table(field);
     t.fill(0);
@@ -76,6 +93,7 @@ export class CategoryFilter {
     this.changed();
   }
 
+  /** Fields with at least one hidden level, in insertion order. */
   activeFields(): string[] {
     return [...this.hidden.entries()].filter(([, t]) => t.includes(1)).map(([f]) => f);
   }
@@ -102,16 +120,27 @@ export class CategoryFilter {
     }
   }
 
+  /** Read-only view of the per-level table, for the visibility pass. */
   hiddenTable(field: string): Uint8Array | undefined {
     return this.hidden.get(field);
   }
 }
 
-/** Per-cell visibility over the loaded prefix (1 = drawn); null when no filter is active. */
+/**
+ * Per-cell visibility over the loaded prefix: 1 = drawn, 0 = filtered out.
+ *
+ * Returns null when no filter is active, so the common case costs nothing and
+ * downstream code can skip the per-cell test entirely. Otherwise this is one
+ * flat pass per filtered field — the same cost class as a colour-by change.
+ */
 export function computeVisibility(
   store: Pick<CellStore, 'codes' | 'loadedCount' | 'n'>,
   filter: CategoryFilter,
   out?: Uint8Array,
+  /**
+   * Ignore this field's own filter. The legend uses it to count each level as
+   * if that level were switched on, which is what a hidden row should report.
+   */
   excludeField?: string
 ): Uint8Array | null {
   const fields = filter.activeFields().filter(f => f !== excludeField);
@@ -133,6 +162,7 @@ export function computeVisibility(
   return vis;
 }
 
+/** The members of `indices` that are visible. Passes `indices` through when nothing is filtered. */
 export function filterIndices(indices: Uint32Array, visible: Uint8Array | null): Uint32Array {
   if (visible === null) return indices;
   let k = 0;
@@ -147,6 +177,7 @@ export function filterIndices(indices: Uint32Array, visible: Uint8Array | null):
   return out;
 }
 
+/** Hidden level labels per filtered field, for describing the filter in words. */
 export function hiddenLabels(
   filter: CategoryFilter,
   levels: ReadonlyMap<string, readonly string[]>
@@ -159,6 +190,7 @@ export function hiddenLabels(
   return out;
 }
 
+/** Number of visible cells among the first `upTo`. */
 export function countVisible(visible: Uint8Array | null, upTo: number): number {
   if (visible === null) return upTo;
   let k = 0;

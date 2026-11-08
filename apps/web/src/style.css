@@ -1,4 +1,9 @@
-/* Themes: every background-dependent color is a custom property (ids match core theme/themes.ts). */
+/* ------------------------------------------------------------------------
+   Themes. Every colour that must change with the background is a custom
+   property here; components never hard-code one. The ids match
+   packages/core/src/theme/themes.ts, which carries the same backgrounds for
+   the WebGL side.
+   ------------------------------------------------------------------------ */
 :root,
 :root[data-theme='black'] {
   --bg-app: #0b0d12;
@@ -133,6 +138,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
   flex: 0 0 auto;
 }
 .switcher { display: flex; gap: 6px; flex-wrap: wrap; }
+.mode-switcher { display: flex; gap: 6px; padding-right: 12px; border-right: 1px solid var(--border); }
+/* `display: flex` above would otherwise win over the hidden attribute. */
+.switcher[hidden] { display: none; }
+.mode-switcher button,
 .switcher button,
 .toolbar button,
 .btn {
@@ -143,6 +152,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: 5px 10px;
   cursor: pointer;
 }
+.mode-switcher button.active,
 .switcher button.active,
 .toolbar button.active,
 .btn.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
@@ -157,7 +167,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-size: 12px;
 }
 
-/* Background picker */
+/* Background picker (UI-2) */
 .theme-picker { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 .theme-picker .label { color: var(--muted); }
 .theme-picker button {
@@ -239,7 +249,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   max-width: 190px;
 }
 
-/* Legend */
+/* Legend (UI-3) */
 .legend { display: flex; flex-direction: column; gap: 6px; }
 .legend-head { display: flex; align-items: baseline; gap: 8px; }
 .legend-title, .lod-readout, .summary-head { font-weight: 600; }
@@ -291,6 +301,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   cursor: pointer;
 }
 .legend-item:hover .legend-only, .legend-item:focus-within .legend-only { visibility: visible; }
+/* Touch screens have no hover: keep "only" visible there. */
 @media (hover: none) { .legend-only { visibility: visible; } }
 .legend-row.off { opacity: .42; }
 .legend-row.off i { background: transparent !important; border-color: var(--muted); }
@@ -358,6 +369,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .chat-input button:disabled { opacity: .4; cursor: default; }
 
 .startup-problem {
+  /* The stage is a flex row; without this the card stretches to full height. */
   align-self: flex-start;
   margin: 48px auto;
   max-width: 640px;
@@ -390,7 +402,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   z-index: 20;
 }
 
-/* Pinned cell / node card */
+/* Pinned cell / node card (UI-1, UI-4). Shown only on click; it never moves
+   with the pointer, which is what made the old hover tooltip jump. */
 .cell-card {
   position: absolute;
   z-index: 8;
@@ -440,7 +453,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .cell-card ol li { font-variant-numeric: tabular-nums; }
 .cell-card ol li span { color: var(--muted); }
 
-/* Foreground inset */
+/* Foreground inset (UI-5) */
 .inset-frame {
   position: absolute;
   box-sizing: border-box;
@@ -558,7 +571,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .inset-connectors { position: absolute; inset: 0; pointer-events: none; z-index: 5; overflow: visible; }
 .inset-connectors line { stroke: var(--accent); stroke-width: 1.25; stroke-dasharray: 5 4; }
 
-/* Segmented anatomy */
+/* Segmented anatomy (NEW) */
 .anatomy { display: flex; flex-direction: column; gap: 6px; }
 .anatomy-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
 .anatomy-tabs button { padding: 2px 8px; font-size: 12px; }
@@ -610,12 +623,257 @@ svg.organ .organ-decor-detail { stroke: var(--organ-decor); stroke-width: 0.8; }
 svg.organ .organ-nodata-bg { fill: var(--organ-nodata-bg); }
 svg.organ .organ-nodata-line { stroke: var(--organ-nodata-line); stroke-width: 2; }
 
-/* Organ gallery */
-.gallery { padding: 20px 24px; max-width: 1200px; }
-.gallery h1 { font-size: 20px; margin: 0 0 6px; }
+/* Measurement pages and the organ gallery */
+.bench, .gallery { padding: 20px 24px; max-width: 1200px; }
+.bench h1, .gallery h1 { font-size: 20px; margin: 0 0 6px; }
+.bench p { max-width: 70ch; }
+.bench button {
+  background: var(--accent);
+  color: var(--accent-text);
+  border: 0;
+  border-radius: 5px;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+.bench pre {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+}
 .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
 .gallery-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
 .gallery-card h2 { font-size: 15px; margin: 0 0 8px; }
 .gallery-figure svg { width: 100%; max-height: 420px; }
 .gallery-key { columns: 2; font-size: 12px; padding-left: 18px; margin: 8px 0 0; }
 .gallery-key i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
+
+/* ------------------------------------------------------------------------
+   Differentiation protocol creator. Colours are the theme's custom
+   properties, so the four backgrounds restyle it without further rules.
+   ------------------------------------------------------------------------ */
+.pc { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.pc-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+.pc-bar .label { color: var(--muted); }
+.pc-stages { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.pc-target { color: var(--muted); }
+.pc-problem { color: var(--msg-error-text); background: var(--msg-error-bg); padding: 4px 8px; border-radius: 5px; }
+.pc-badge {
+  border: 1px solid var(--highlight);
+  color: var(--highlight);
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.pc-grid { flex: 1 1 auto; min-height: 0; display: flex; }
+.pc-loading { padding: 12px; }
+
+.pg { flex: 1 1 auto; min-height: 0; min-width: 0; display: grid; gap: 8px; padding: 8px; background: var(--bg-app); }
+.pg-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.pg-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.pg-head h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.pg-extra { flex: 1; color: var(--muted); font-size: 11px; }
+.pg-body { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; }
+.pg-restore { display: none; }
+.pg-panel.rail .pg-expand { display: none; }
+.pg-panel.rail .pg-body { overflow: hidden; }
+.pg-panel.rail .pg-restore {
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.pg-panel.rail .pg-restore:hover { box-shadow: inset 0 0 0 2px var(--accent); }
+
+/* A thumbnail is a preview: a details card in it would cover the whole plot. */
+.pg-panel.rail .cell-card { display: none; }
+/* In the protocol creator the status line takes its own row instead of floating over the panels. */
+#app:has(.pc) #status { position: static; align-self: flex-start; margin: 0 0 8px 12px; z-index: auto; }
+
+.pc-map { display: flex; height: 100%; min-height: 0; }
+.pc-map > .canvas-holder { flex: 1 1 auto; }
+.pc-map.compact > .side { display: none; }
+/*
+ * Expanded, the map keeps the whole panel for the plot: only the toolbar
+ * (pan, box, lasso, zoom, clear, reset, inset) is shown, floating over the
+ * canvas, so the lasso and box tools return without taking a column back.
+ */
+.pc-map { position: relative; }
+.pc-map.floating-tools > .side {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 4;
+  width: auto;
+  max-width: calc(100% - 16px);
+  flex: none;
+  padding: 6px;
+  overflow: visible;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+}
+/* !important: the trajectory view's own section wrapper sets display: contents inline. */
+.pc-map.floating-tools > .side > :not(.toolbar) { display: none !important; }
+
+/*
+ * The drawing is sized to its panel (the whole tree is in view, stem cell
+ * included) and the step list follows it, reached by scrolling. Expanded, the
+ * panel is tall enough to show both, so the drawing takes less of it.
+ */
+.tp { height: 100%; padding: 6px 8px; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; }
+.tp-tree { flex: 0 0 100%; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
+.pg-panel.main .tp-tree { flex-basis: 56%; }
+.tp-note { margin: 0; flex: none; color: var(--muted); font-size: 11px; }
+.tp-svg { flex: 1 1 0; min-height: 0; width: 100%; display: block; }
+.tp-steps { flex: none; }
+/* Untraced lines are muted but stay at the 3:1 that graphics need; the traced path is stronger and thicker. */
+.tp-edge { stroke: color-mix(in srgb, var(--muted) 78%, var(--bg-panel)); stroke-width: 2; }
+.tp-edge.on { stroke: var(--highlight); stroke-width: 4; }
+.tp-tick { stroke: var(--muted); stroke-width: 1; }
+.tp-axis { fill: var(--muted); font-size: 14px; }
+.tp-node { cursor: pointer; }
+/* A generous invisible disc, so a small node is easy to hit. */
+.tp-node .tp-hit { fill: transparent; stroke: none; }
+.tp-node .tp-body { fill: var(--organ-base); stroke: var(--text); stroke-width: 1.5; }
+.tp-node.kind-stem .tp-body { stroke-width: 2.5; }
+.tp-node.on .tp-body { fill: var(--highlight); stroke: var(--text); }
+.tp-node.target .tp-body { stroke-width: 3; }
+.tp-node.focus .tp-body { stroke: var(--accent); stroke-width: 4; }
+.tp-node:focus-visible .tp-body { stroke: var(--accent); stroke-width: 4; }
+.tp-label { fill: var(--text); font-size: 16px; }
+/* Off the traced path: hollow, outlined and labelled in the muted text colour, not faded, so it stays readable. */
+.tp-svg.has-trace .tp-node:not(.on) .tp-body { fill: var(--bg-panel); stroke: color-mix(in srgb, var(--muted) 88%, var(--bg-panel)); }
+.tp-svg.has-trace .tp-node:not(.on) .tp-label { fill: var(--muted); }
+.tp-node.on .tp-label { font-weight: 700; }
+.tp-steps-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.tp-steps-head b { flex: 1; }
+.tp-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.tp-list li { padding: 3px 6px; border-radius: 5px; cursor: pointer; }
+.tp-list li.focus { background: var(--msg-user); outline: 1px solid var(--accent); }
+.tp-fork { color: var(--highlight); }
+
+.pc-recipe { height: 100%; padding: 8px; box-sizing: border-box; display: flex; }
+.pc-recipe .chat { flex: 1 1 auto; margin-top: 0; min-height: 0; }
+.pc-recipe .chat-log { flex: 1 1 auto; max-height: none; min-height: 0; }
+
+/* ------------------------------------------------------------------------
+   Organ view: a body with three organs, then one organ with its parts, UMAP
+   and trajectory. Theme custom properties only.
+   ------------------------------------------------------------------------ */
+.ov { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.ov-bar .ov-title { font-size: 13px; }
+.ov-summary { margin-left: auto; color: var(--muted); }
+.ov-overview { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px; background: var(--bg-app); }
+.ov-overview[hidden], .ov-detail[hidden] { display: none; }
+.ov-overview-inner {
+  position: relative;
+  min-height: 100%;
+  display: grid;
+  grid-template-columns: minmax(200px, 300px) minmax(260px, 420px);
+  justify-content: center;
+  align-content: center;
+  column-gap: clamp(48px, 12vw, 180px);
+  row-gap: 8px;
+  align-items: center;
+}
+.ov-body { display: flex; justify-content: center; height: min(62vh, 560px); }
+.ov-body svg { height: 100%; width: auto; max-width: 100%; }
+.ov-cards { display: flex; flex-direction: column; gap: 14px; }
+.ov-links { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.ov-link { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.ov-link.hot { stroke: var(--accent); stroke-width: 3; stroke-dasharray: none; }
+.ov-dot { fill: var(--muted); }
+.ov-dot.hot { fill: var(--accent); }
+.ov-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.ov-card:hover, .ov-card:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.ov-card:disabled { opacity: .5; cursor: default; }
+.ov-card-fig svg { width: 88px; height: 88px; display: block; }
+.ov-card-text { display: flex; flex-direction: column; gap: 2px; }
+.ov-card-text b { font-size: 15px; }
+.ov-hint, .ov-missing { grid-column: 1 / -1; text-align: center; margin: 8px 0 0; }
+.ov-missing { color: var(--msg-error-text); background: var(--msg-error-bg); padding: 6px 10px; border-radius: 6px; }
+
+.ov-detail {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  background: var(--bg-app);
+  grid-template-columns: 112px minmax(220px, 0.85fr) minmax(0, 1fr) minmax(0, 1fr);
+}
+.ov-rail { display: flex; flex-direction: column; gap: 6px; min-height: 0; overflow: auto; }
+.ov-rail-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 4px;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.ov-rail-item[aria-current='true'] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); font-weight: 600; }
+.ov-rail-item:hover:not(:disabled), .ov-rail-item:focus-visible { border-color: var(--accent); }
+.ov-rail-item:disabled { opacity: .5; cursor: default; }
+.ov-rail-fig svg { width: 72px; height: 72px; display: block; }
+.ov-figure .pg-body { padding: 6px 8px; }
+.ov-figure .anatomy-figure svg { max-height: 46vh; }
+.ov-detail .pc-map { height: 100%; }
+
+/* Smaller floating toolbars, so a narrow plot loses less of itself to its controls. */
+.pc-map.floating-tools > .side { padding: 4px; }
+.pc-map.floating-tools .toolbar { gap: 4px; }
+.pc-map.floating-tools .toolbar button { padding: 3px 8px; font-size: 12px; }
+
+@media (max-width: 1000px) {
+  .ov-detail {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto minmax(320px, 1fr) minmax(0, 1fr);
+  }
+  .ov-figure .anatomy-figure svg { max-height: 24vh; }
+  .ov-rail { grid-column: 1 / -1; flex-direction: row; }
+  .ov-rail-item { flex: 1; flex-direction: row; justify-content: center; }
+  .ov-rail-fig svg { width: 36px; height: 36px; }
+  .ov-figure { grid-column: 1 / -1; }
+  .ov-overview-inner { grid-template-columns: minmax(150px, 240px) minmax(220px, 1fr); column-gap: 40px; }
+  .ov-card-fig svg { width: 56px; height: 56px; }
+}

@@ -10,6 +10,13 @@ function readState(): Record<string, boolean> {
   }
 }
 
+/**
+ * A collapsible side-panel section whose open state survives a reload.
+ *
+ * The panel gained a legend filter, an anatomy figure and display options in
+ * this round; folding lets a user keep the ones they use open without the
+ * chat being pushed off the bottom.
+ */
 export function createSection(root: HTMLElement, id: string, title: string, open = true): HTMLElement {
   const details = document.createElement('details');
   details.className = `section section-${id}`;

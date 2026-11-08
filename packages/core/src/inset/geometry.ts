@@ -1,5 +1,15 @@
-/** Inset geometry (matplotlib `mark_inset` convention). World maths is y-direction independent. */
+/**
+ * Geometry for the foreground inset: a magnified view of one region of the
+ * embedding, placed over the plot, with the region marked on the main view
+ * and joined to the inset by two connector lines — the matplotlib
+ * `zoomed_inset_axes` + `mark_inset` convention for figures that need two
+ * scales at once.
+ *
+ * World maths (fitting, regions) is independent of which way the y axis
+ * points, so it lives here; projecting to screen pixels is the renderer's job.
+ */
 
+/** `[minX, minY, maxX, maxY]` in world units. */
 export type Bounds = [number, number, number, number];
 
 /** Screen-space rectangle in CSS pixels, origin top-left. */
@@ -15,7 +25,10 @@ export interface OrthoFit {
   zoom: number;
 }
 
-/** View state fitting `bounds` into the viewport (`pad` > 1 leaves a margin); 1 unit = 2^zoom px. */
+/**
+ * Orthographic view state that fits `bounds` into a `width × height` viewport,
+ * with `pad` (> 1 leaves a margin). One world unit spans 2^zoom pixels.
+ */
 export function fitBounds(bounds: Bounds, width: number, height: number, pad = 1): OrthoFit {
   const [x0, y0, x1, y1] = bounds;
   const w = Math.max((x1 - x0) * pad, 1e-9);
@@ -24,6 +37,7 @@ export function fitBounds(bounds: Bounds, width: number, height: number, pad = 1
   return { target: [(x0 + x1) / 2, (y0 + y1) / 2], zoom: Number.isFinite(zoom) ? zoom : 0 };
 }
 
+/** World bounds visible in a `width × height` viewport centred on `target` at `zoom`. */
 export function visibleBounds(target: [number, number], zoom: number, width: number, height: number): Bounds {
   const scale = Math.pow(2, zoom);
   const hw = width / 2 / scale;
@@ -31,16 +45,22 @@ export function visibleBounds(target: [number, number], zoom: number, width: num
   return [target[0] - hw, target[1] - hh, target[0] + hw, target[1] + hh];
 }
 
+/**
+ * A region whose aspect matches the inset panel, so the marked rectangle on
+ * the plot is exactly what the inset shows — no letterboxing to explain.
+ */
 export function regionAround(center: [number, number], worldWidth: number, aspect: number): Bounds {
   const w = Math.max(worldWidth, 1e-9);
   const h = w * (aspect > 0 && Number.isFinite(aspect) ? aspect : 1);
   return [center[0] - w / 2, center[1] - h / 2, center[0] + w / 2, center[1] + h / 2];
 }
 
+/** How much larger the inset draws the region than the main view does. */
 export function magnification(mainZoom: number, insetZoom: number): number {
   return Math.pow(2, insetZoom - mainZoom);
 }
 
+/** Keeps a rectangle inside a container, shrinking it only if it cannot fit. */
 export function clampRect(r: ScreenRect, cw: number, ch: number, minW = 1, minH = 1): ScreenRect {
   const w = Math.max(minW, Math.min(r.w, cw));
   const h = Math.max(minH, Math.min(r.h, ch));
@@ -71,6 +91,16 @@ function cross(o: Pt, a: Pt, b: Pt): number {
   return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
 }
 
+/**
+ * The two connector lines between a marked region and its inset.
+ *
+ * They are the edges of the convex hull of both rectangles that bridge from
+ * one to the other — the outer tangents — so they never cut through either
+ * rectangle, whatever the relative placement. When a hull edge runs along a
+ * side shared by both (inset level with the region), it is shortened to the
+ * nearest pair of corners, which is what a figure editor would draw. Returns
+ * no lines when the rectangles overlap, because no clean pair exists.
+ */
 export function connectorLines(region: ScreenRect, inset: ScreenRect): [Pt, Pt][] {
   if (rectsIntersect(region, inset)) return [];
   const a = corners(region);
@@ -78,6 +108,7 @@ export function connectorLines(region: ScreenRect, inset: ScreenRect): [Pt, Pt][
   const pts = [...a.map(p => ({ p, from: 0 })), ...b.map(p => ({ p, from: 1 }))];
   pts.sort((u, v) => u.p[0] - v.p[0] || u.p[1] - v.p[1]);
 
+  // Andrew's monotone chain; collinear points dropped.
   const hull: typeof pts = [];
   for (const q of pts) {
     while (hull.length >= 2 && cross(hull[hull.length - 2].p, hull[hull.length - 1].p, q.p) <= 0) hull.pop();

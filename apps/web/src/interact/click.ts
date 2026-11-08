@@ -1,8 +1,18 @@
 export interface ClickOptions {
+  /** Maximum pointer travel, in CSS pixels, for a press to count as a click. */
   tolerancePx?: number;
+  /** Maximum press duration in milliseconds. */
   maxMs?: number;
 }
 
+/**
+ * Distinguishes a click from a drag on the plot.
+ *
+ * The plot is also panned, boxed and lassoed by dragging, so a plain `click`
+ * event is not enough: browsers fire one at the end of a short drag too. A
+ * press counts as a click only if the pointer stays within a few pixels and
+ * is released promptly — the same test deck.gl's own tap gesture uses.
+ */
 export class ClickDetector {
   private down: { id: number; x: number; y: number; t: number } | null = null;
   private tolerance2: number;

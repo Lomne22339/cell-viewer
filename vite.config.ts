@@ -1,7 +1,12 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
 
-/** `/api` is forwarded to FastAPI, keeping the page same-origin (no CORS); override: `API_TARGET`. */
+/**
+ * The page calls `/api/...` on its own origin; Vite forwards those requests to
+ * the FastAPI server. Same-origin requests need no CORS, so the app works on
+ * whatever port Vite ends up on (5174 when 5173 is busy). Override the target
+ * with `API_TARGET=http://host:port npm run dev`.
+ */
 const apiProxy = {
   '/api': { target: process.env.API_TARGET ?? 'http://localhost:8000', changeOrigin: true }
 };
@@ -18,6 +23,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'apps/web/index.html'),
+        bench: resolve(__dirname, 'apps/web/bench.html'),
+        diag: resolve(__dirname, 'apps/web/diag.html'),
         anatomy: resolve(__dirname, 'apps/web/anatomy.html')
       }
     }

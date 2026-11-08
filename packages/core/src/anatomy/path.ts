@@ -1,4 +1,15 @@
-/** Minimal SVG path-data reader, used to validate hand-authored organ paths. */
+/**
+ * Minimal SVG path-data reader.
+ *
+ * Organ models are hand-authored path strings, and a typo in one renders as a
+ * silently missing region rather than an error. This parser exists so the
+ * test suite can reject malformed paths and paths that stray outside their
+ * viewBox before anyone has to notice a hole in a figure.
+ *
+ * It follows the SVG grammar closely enough for anything an editor or
+ * optimiser emits: compact numbers (`1.5.5`, `10-5`), implicit command
+ * repeats, and arc flags written without separators (`a5 5 0 015 5`).
+ */
 
 const ARITY: Record<string, number> = {
   m: 2, l: 2, h: 1, v: 1, c: 6, s: 4, q: 4, t: 2, a: 7, z: 0
@@ -11,6 +22,7 @@ export interface PathCommand {
   args: number[];
 }
 
+/** Parses path data into commands, or throws with the offending position. */
 export function parsePath(d: string): PathCommand[] {
   const out: PathCommand[] = [];
   let current: PathCommand | null = null;
@@ -29,7 +41,8 @@ export function parsePath(d: string): PathCommand[] {
       continue;
     }
     if (!current) throw new Error('path data must start with a command');
-    // Arc flags (4th and 5th of 7 args) are single digits, possibly packed with no separator.
+    // Arc flags (the 4th and 5th of each 7 arguments) are single digits and
+    // may be packed against their neighbours with no separator.
     const isArc = current.op === 'a' || current.op === 'A';
     const slot = current.args.length % 7;
     if (isArc && (slot === 3 || slot === 4)) {
@@ -55,6 +68,11 @@ export function parsePath(d: string): PathCommand[] {
   return out;
 }
 
+/**
+ * Points along an elliptical arc, per the SVG implementation notes (F.6.5):
+ * endpoint parameters converted to centre form, then sampled. Sampling is
+ * enough for a bounds check and avoids solving for extrema in rotated frames.
+ */
 function arcPoints(
   x1: number, y1: number, rx: number, ry: number, phiDeg: number,
   largeArc: number, sweep: number, x2: number, y2: number
@@ -69,6 +87,7 @@ function arcPoints(
   const dy = (y1 - y2) / 2;
   const x1p = cos * dx + sin * dy;
   const y1p = -sin * dx + cos * dy;
+  // Radii too small for the endpoints are scaled up, as the spec requires.
   const lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
   if (lambda > 1) {
     rx *= Math.sqrt(lambda);
@@ -97,12 +116,23 @@ function arcPoints(
   return pts;
 }
 
-/** Bounds of every visited point, control points included (S/T also visit their implicit one). */
+/**
+ * Bounding box of every point a path visits, control points included.
+ *
+ * Including control points makes this a conservative box for curves, which
+ * is what a "does it stay inside the viewBox" check wants; arcs are sampled
+ * along their actual curve. The smooth forms S and T carry an implicit first
+ * control point — the previous curve's last control reflected about the
+ * current point — which is visited too, or a smooth curve could bulge out of
+ * the viewBox unnoticed.
+ */
 export function pathBounds(d: string): [number, number, number, number] {
   let x = 0;
   let y = 0;
   let startX = 0;
   let startY = 0;
+  // Last control point of the previous segment, and whether that segment was
+  // a cubic (C/S) or a quadratic (Q/T). Reflection only applies within a kind.
   let ctrlX = 0;
   let ctrlY = 0;
   let ctrlKind: 'cubic' | 'quad' | null = null;
@@ -137,6 +167,7 @@ export function pathBounds(d: string): [number, number, number, number] {
         const ry = same ? 2 * y - ctrlY : y;
         visit(rx, ry);
         if (kind === 's') {
+          // The explicit control is the second one; it is what the next S reflects.
           ctrlX = ox + a[0];
           ctrlY = oy + a[1];
         } else {
@@ -168,7 +199,8 @@ export function pathBounds(d: string): [number, number, number, number] {
         x = ox + a[n - 2];
         y = oy + a[n - 1];
       }
-      // A moveto's implicit followers are linetos; only the first pair starts a subpath.
+      // A moveto's implicit followers are linetos, and only the first pair of a
+      // moveto starts a new subpath.
       if (kind === 'm' && i === 0) {
         startX = x;
         startY = y;

@@ -28,6 +28,7 @@ export function createSelectionSummary(root: HTMLElement): SummaryHandle {
         .slice(0, 2)
         .map(f => `<div class="sum-block"><h4>${esc(f)}</h4>${top(f)}</div>`)
         .join('');
+      // Under a legend filter the meaningful denominator is what is visible.
       const visible = ctx.visibleN ?? ctx.totalN;
       const filtered = visible < ctx.totalN;
       const pct = ((ctx.n / Math.max(1, visible)) * 100).toFixed(1);

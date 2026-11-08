@@ -1,0 +1,47 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx vitest *)",
+      "Bash(npx tsc *)",
+      "Bash(npx playwright *)",
+      "Bash(npx vite *)",
+      "Bash(npm run *)",
+      "Bash(.venv/bin/python -m pytest *)",
+      "Bash(.venv/bin/python -m server.prep *)",
+      "Bash(.venv/bin/python -m uvicorn *)",
+      "Bash(node scripts/*)",
+      "Bash(.claude/hooks/*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Edit(./.env)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-edit-guard.sh",
+            "timeout": 150,
+            "statusMessage": "Checking invariants and related tests"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop-gate.sh",
+            "timeout": 600,
+            "statusMessage": "Running quality gate (tsc, vitest, pytest)"
+          }
+        ]
+      }
+    ]
+  }
+}

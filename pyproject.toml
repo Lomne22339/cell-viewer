@@ -3,3 +3,6 @@ name = "cell-viewer-server"
 version = "0.1.0"
 description = "Tile preparation and serving API for the Cell Viewer."
 requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["server/tests"]

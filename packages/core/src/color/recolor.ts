@@ -2,24 +2,57 @@ import type { CellStore } from '../data/schema';
 import type { Rgb } from '../theme/themes';
 import { adjustColor, adjustRamp, paletteFor, rampSample, VIRIDIS } from './palette';
 
-/** Unselected colors dim toward the background, never by alpha, so points stay opaque. */
+/**
+ * How a selection highlight is drawn.
+ *
+ * Dimming by alpha requires the renderer to blend, and blending a million
+ * overlapping points is the single most expensive thing this viewer does — on
+ * an Apple M4 it costs four times the frame rate (see
+ * docs/benchmarks/2026-09-07-capacity.md). Dimming by darkening the colour
+ * toward the background instead keeps every point fully opaque, so blending
+ * can stay off and the highlight still reads.
+ */
 export interface DimOptions {
+  /** 1 = selected, 0 = not. Null means nothing is selected. */
   mask: Uint8Array | null;
+  /** How much of an unselected cell's own colour survives. 0 = background, 1 = no dimming. */
   factor: number;
-  /** Unselected cells fade toward this: the plot background (black would stand out on light themes). */
+  /**
+   * The colour unselected cells fade toward — the plot background. On a white
+   * or light-yellow theme, fading toward black would make the cells that are
+   * meant to recede the darkest, most prominent marks on the plot.
+   * Defaults to black.
+   *
+   * When given, the palette or ramp is also adjusted to keep its contrast
+   * against this background (see `paletteFor`), so a pale category stays
+   * visible on a light theme. Selected cells take the adjusted colour and
+   * dimmed ones fade from it.
+   */
   background?: readonly [number, number, number];
-  /** Legend visibility: 0 hides a cell (alpha 0, culled in the vertex shader). */
+  /**
+   * Per-cell visibility from the legend filter: 0 hides the cell. A hidden cell
+   * gets alpha 0, which the renderer culls in the vertex shader, so filtering
+   * never needs blending. Null means every cell is visible.
+   */
   visible?: Uint8Array | null;
 }
 
 const DEFAULT_DIM: DimOptions = { mask: null, factor: 0.22 };
 const BLACK = [0, 0, 0] as const;
 
+/** The background colours are adjusted against, or undefined for none. */
 function backgroundOf(dim: DimOptions): Rgb | undefined {
   const b = dim.background;
   return b ? [b[0], b[1], b[2]] : undefined;
 }
 
+/**
+ * Fills `store.color` from a categorical field.
+ *
+ * This is the hot path for a colour-by change: at five million cells it
+ * writes twenty megabytes. It is a single flat loop with no allocation and
+ * no function calls per cell.
+ */
 export function recolorCategorical(
   store: CellStore,
   field: string,
@@ -37,6 +70,7 @@ export function recolorCategorical(
   const visible = dim.visible ?? null;
   const f = dim.factor;
   const [br, bg, bb] = dim.background ?? BLACK;
+  // Precomputed so the per-cell work is a multiply-add: c * f + bg * (1 - f).
   const g = 1 - f;
   const r0 = br * g;
   const g0 = bg * g;
@@ -56,7 +90,10 @@ export function recolorCategorical(
     }
     color[o + 3] = visible === null || visible[i] ? alpha : 0;
   }
-  // Leave the unloaded tail alone: `color` starts zeroed and is only written over [0, loadedCount).
+  // The tail is left alone deliberately. `color` is allocated zeroed and only
+  // ever written across [0, loadedCount), which never shrinks, so the unloaded
+  // remainder is already transparent. Re-zeroing it here would rewrite forty
+  // megabytes on every chunk of a ten-million-cell load.
 }
 
 export function recolorNumeric(
@@ -95,9 +132,16 @@ export function recolorNumeric(
     }
     color[o + 3] = visible === null || visible[i] ? alpha : 0;
   }
+  // See the note in recolorCategorical: the unloaded tail is already zeroed.
 }
 
-/** One color for every cell; a zeroed buffer would be alpha 0 and culled. */
+/**
+ * One colour for every cell, for a dataset with no annotation to colour by.
+ *
+ * Coordinates alone are a valid dataset, and leaving the colour buffer at its
+ * zeroed state would give every point alpha 0 — which the renderer culls — so
+ * such a dataset needs an explicit colour to be visible at all.
+ */
 export function recolorConstant(
   store: CellStore,
   rgb: readonly [number, number, number],
@@ -124,6 +168,12 @@ export function recolorConstant(
   }
 }
 
+/**
+ * Alpha-based highlight, kept for the translucent rendering mode.
+ *
+ * Only usable while blending is on. The opaque path dims through the colour
+ * itself instead — see `DimOptions`.
+ */
 export function applySelectionMask(
   color: Uint8Array,
   mask: Uint8Array | null,
@@ -132,7 +182,8 @@ export function applySelectionMask(
   upTo = color.length / 4,
   visible: Uint8Array | null = null
 ): void {
-  // A filtered-out cell stays at alpha 0 whatever the selection says.
+  // A filtered-out cell stays at alpha 0 whatever the selection says;
+  // otherwise toggling translucency would resurrect hidden cells.
   for (let i = 0; i < upTo; i++) {
     color[i * 4 + 3] =
       visible !== null && !visible[i] ? 0 : mask === null || mask[i] ? fullAlpha : dimAlpha;
@@ -145,6 +196,13 @@ export interface LegendEntry {
   count: number;
 }
 
+/**
+ * One entry per level with its colour and cell count. With `visible`, only
+ * visible cells are counted — so "only T cells, coloured by tissue" counts the
+ * T cells in each tissue, not every cell. With `background`, swatches use the
+ * same background-adjusted palette as `recolorCategorical`, so the legend
+ * matches the plot.
+ */
 export function legendEntries(
   store: CellStore,
   field: string,

@@ -1,6 +1,15 @@
 import type { UniformGrid } from '../index/grid';
 import { normalizeRect, pointInPolygon, polygonBounds, type Polygon } from './geometry';
 
+/**
+ * Region query, grid-accelerated when an index is supplied.
+ *
+ * The grid narrows candidates to bins overlapping the polygon's bounding
+ * box; every surviving candidate still gets a full point-in-polygon test,
+ * so the result is identical to brute force rather than approximate. That
+ * equality is asserted by property tests, because an index that silently
+ * drops points is worse than no index.
+ */
 export function selectPolygon(
   xy: Float32Array,
   count: number,
@@ -85,7 +94,14 @@ export function selectRect(
   return res;
 }
 
-/** Up to `k` cells within `radius` of `(x, y)`, nearest first; ties break by index. */
+/**
+ * Up to `k` cells within `radius` of `(x, y)`, nearest first.
+ *
+ * This is what a click resolves to. Ties are broken by index, so the answer
+ * is deterministic and identical with or without the grid — the property
+ * tests compare the two. Returning several candidates rather than one lets
+ * the caller skip cells it has hidden without a second round trip.
+ */
 export function nearestPoints(
   xy: Float32Array,
   count: number,

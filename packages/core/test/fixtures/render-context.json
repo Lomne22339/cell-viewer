@@ -1,0 +1,636 @@
+[
+  {
+    "name": "basic",
+    "context": {
+      "datasetId": "sim1m",
+      "view": "embedding",
+      "n": 12843,
+      "totalN": 1000000,
+      "bbox": [
+        -4,
+        -2,
+        6,
+        9
+      ],
+      "centroid": [
+        1,
+        3
+      ],
+      "breakdown": {
+        "cell_type": {
+          "T cell": 8000,
+          "Monocyte": 4843
+        },
+        "tissue": {
+          "lung": 12000,
+          "liver": 843
+        }
+      },
+      "omittedLevels": {},
+      "numericStats": {
+        "pseudotime": {
+          "min": 0.1,
+          "max": 0.9,
+          "mean": 0.44,
+          "q": [
+            0.2,
+            0.4,
+            0.7
+          ]
+        }
+      },
+      "sampleIds": [
+        "cell_1",
+        "cell_2"
+      ],
+      "colorBy": "cell_type",
+      "visibleN": 1000000,
+      "hidden": {}
+    },
+    "expected": "Selection from dataset \"sim1m\" (embedding view).\n12,843 cells selected out of 1,000,000 total (1.28%).\nRegion: x -4.00 to 6.00, y -2.00 to 9.00; centroid (1.00, 3.00).\nCurrently coloured by: cell_type.\n\ncell_type composition:\n  T cell: 8,000 (62.3%)\n  Monocyte: 4,843 (37.7%)\n\ntissue composition:\n  lung: 12,000 (93.4%)\n  liver: 843 (6.6%)\n\npseudotime: min 0.100, q1 0.200, median 0.400, q3 0.700, max 0.900, mean 0.440\n\nExample cell ids: cell_1, cell_2"
+  },
+  {
+    "name": "ties",
+    "context": {
+      "datasetId": "sim1m",
+      "view": "embedding",
+      "n": 16,
+      "totalN": 128,
+      "bbox": [
+        0.125,
+        -0.125,
+        2.5,
+        0.375
+      ],
+      "centroid": [
+        0.625,
+        -0.875
+      ],
+      "breakdown": {
+        "cell_type": {
+          "a": 1,
+          "b": 15
+        }
+      },
+      "omittedLevels": {},
+      "numericStats": {
+        "pseudotime": {
+          "min": 0.0625,
+          "max": 0.9375,
+          "mean": 0.4375,
+          "q": [
+            0.3125,
+            0.5,
+            0.8125
+          ]
+        }
+      },
+      "sampleIds": [
+        "cell_1",
+        "cell_2"
+      ],
+      "colorBy": "cell_type",
+      "visibleN": 128,
+      "hidden": {}
+    },
+    "expected": "Selection from dataset \"sim1m\" (embedding view).\n16 cells selected out of 128 total (12.50%).\nRegion: x 0.13 to 2.50, y -0.13 to 0.38; centroid (0.63, -0.88).\nCurrently coloured by: cell_type.\n\ncell_type composition:\n  b: 15 (93.8%)\n  a: 1 (6.3%)\n\npseudotime: min 0.063, q1 0.313, median 0.500, q3 0.813, max 0.938, mean 0.438\n\nExample cell ids: cell_1, cell_2"
+  },
+  {
+    "name": "share-tie",
+    "context": {
+      "datasetId": "sim1m",
+      "view": "embedding",
+      "n": 1,
+      "totalN": 800,
+      "bbox": [
+        -4,
+        -2,
+        6,
+        9
+      ],
+      "centroid": [
+        1,
+        3
+      ],
+      "breakdown": {
+        "cell_type": {
+          "x": 1
+        }
+      },
+      "omittedLevels": {},
+      "numericStats": {},
+      "sampleIds": [
+        "cell_1",
+        "cell_2"
+      ],
+      "colorBy": "cell_type",
+      "visibleN": 800,
+      "hidden": {}
+    },
+    "expected": "Selection from dataset \"sim1m\" (embedding view).\n1 cells selected out of 800 total (0.13%).\nRegion: x -4.00 to 6.00, y -2.00 to 9.00; centroid (1.00, 3.00).\nCurrently coloured by: cell_type.\n\ncell_type composition:\n  x: 1 (100.0%)\n\n\nExample cell ids: cell_1, cell_2"
+  },
+  {
+    "name": "near-ties",
+    "context": {
+      "datasetId": "sim1m",
+      "view": "embedding",
+      "n": 12843,
+      "totalN": 1000000,
+      "bbox": [
+        1.005,
+        2.675,
+        -1.005,
+        1e-7
+      ],
+      "centroid": [
+        -0.001,
+        -1e-7
+      ],
+      "breakdown": {
+        "cell_type": {
+          "T cell": 8000,
+          "Monocyte": 4843
+        },
+        "tissue": {
+          "lung": 12000,
+          "liver": 843
+        }
+      },
+      "omittedLevels": {},
+      "numericStats": {
+        "score": {
+          "min": 1.0005,
+          "max": 2.6745,
+          "mean": -0.0005,
+          "q": [
+            0.0015,
+            1e-9,
+            -1e-9
+          ]
+        }
+      },
+      "sampleIds": [
+        "cell_1",
+        "cell_2"
+      ],
+      "colorBy": "cell_type",
+      "visibleN": 1000000,
+      "hidden": {}
+    },
+    "expected": "Selection from dataset \"sim1m\" (embedding view).\n12,843 cells selected out of 1,000,000 total (1.28%).\nRegion: x 1.00 to -1.00, y 2.67 to 0.00; centroid (-0.00, -0.00).\nCurrently coloured by: cell_type.\n\ncell_type composition:\n  T cell: 8,000 (62.3%)\n  Monocyte: 4,843 (37.7%)\n\ntissue composition:\n  lung: 12,000 (93.4%)\n  liver: 843 (6.6%)\n\nscore: min 1.000, q1 0.002, median 0.000, q3 -0.000, max 2.675, mean -0.001\n\nExample cell ids: cell_1, cell_2"
+  },
+  {
+    "name": "filtered",
+    "context": {
+      "datasetId": "sim1m",
+      "view": "embedding",
+      "n": 12843,
+      "totalN": 1000000,
+      "bbox": [
+        -4,
+        -2,
+        6,
+        9
+      ],
+      "centroid": [
+        1,
+        3
+      ],
+      "breakdown": {
+        "cell_type": {
+          "T cell": 8000,
+          "Monocyte": 4843
+        },
+        "tissue": {
+          "lung": 12000,
+          "liver": 843
+        }
+      },
+      "omittedLevels": {},
+      "numericStats": {
+        "pseudotime": {
+          "min": 0.1,
+          "max": 0.9,
+          "mean": 0.44,
+          "q": [
+            0.2,
+            0.4,
+            0.7
+          ]
+        }
+      },
+      "sampleIds": [
+        "cell_1",
+        "cell_2"
+      ],
+      "colorBy": "cell_type",
+      "visibleN": 200000,
+      "hidden": {
+        "cell_type": [
+          "hidden type 0",
+          "hidden type 1",
+          "hidden type 2",
+          "hidden type 3",
+          "hidden type 4",
+          "hidden type 5",
+          "hidden type 6",
+          "hidden type 7",
+          "hidden type 8",
+          "hidden type 9",
+          "hidden type 10",
+          "hidden type 11",
+          "hidden type 12",
+          "hidden type 13"
+        ],
+        "tissue": []
+      }
+    },
+    "expected": "Selection from dataset \"sim1m\" (embedding view).\n12,843 cells selected out of 200,000 visible (1,000,000 total; 6.42% of visible).\nRegion: x -4.00 to 6.00, y -2.00 to 9.00; centroid (1.00, 3.00).\nCurrently coloured by: cell_type.\nLegend filter hides cell_type: hidden type 0, hidden type 1, hidden type 2, hidden type 3, hidden type 4, hidden type 5, hidden type 6, hidden type 7, hidden type 8, hidden type 9, hidden type 10, hidden type 11 and 2 more.\n\ncell_type composition:\n  T cell: 8,000 (62.3%)\n  Monocyte: 4,843 (37.7%)\n\ntissue composition:\n  lung: 12,000 (93.4%)\n  liver: 843 (6.6%)\n\npseudotime: min 0.100, q1 0.200, median 0.400, q3 0.700, max 0.900, mean 0.440\n\nExample cell ids: cell_1, cell_2"
+  },
+  {
+    "name": "filtered-to-zero",
+    "context": {
+      "datasetId": "sim1m",
+      "view": "embedding",
+      "n": 5,
+      "totalN": 1000000,
+      "bbox": [
+        -4,
+        -2,
+        6,
+        9
+      ],
+      "centroid": [
+        1,
+        3
+      ],
+      "breakdown": {
+        "cell_type": {
+          "T cell": 3,
+          "Monocyte": 2
+        }
+      },
+      "omittedLevels": {},
+      "numericStats": {
+        "pseudotime": {
+          "min": 0.1,
+          "max": 0.9,
+          "mean": 0.44,
+          "q": [
+            0.2,
+            0.4,
+            0.7
+          ]
+        }
+      },
+      "sampleIds": [
+        "cell_1",
+        "cell_2"
+      ],
+      "colorBy": "cell_type",
+      "visibleN": 0,
+      "hidden": {
+        "tissue": [
+          "lung",
+          "liver"
+        ]
+      }
+    },
+    "expected": "Selection from dataset \"sim1m\" (embedding view).\n5 cells selected out of 0 visible (1,000,000 total; 500.00% of visible).\nRegion: x -4.00 to 6.00, y -2.00 to 9.00; centroid (1.00, 3.00).\nCurrently coloured by: cell_type.\nLegend filter hides tissue: lung, liver.\n\ncell_type composition:\n  T cell: 3 (60.0%)\n  Monocyte: 2 (40.0%)\n\npseudotime: min 0.100, q1 0.200, median 0.400, q3 0.700, max 0.900, mean 0.440\n\nExample cell ids: cell_1, cell_2"
+  },
+  {
+    "name": "long-tail",
+    "context": {
+      "datasetId": "sim1m",
+      "view": "embedding",
+      "n": 20000,
+      "totalN": 1000000,
+      "bbox": [
+        -4,
+        -2,
+        6,
+        9
+      ],
+      "centroid": [
+        1,
+        3
+      ],
+      "breakdown": {
+        "donor": {
+          "donor_00": 400,
+          "donor_01": 393,
+          "donor_02": 386,
+          "donor_03": 379,
+          "donor_04": 372,
+          "donor_05": 365,
+          "donor_06": 358,
+          "donor_07": 351,
+          "donor_08": 344,
+          "donor_09": 337,
+          "donor_10": 330,
+          "donor_11": 323,
+          "donor_12": 316,
+          "donor_13": 309,
+          "donor_14": 302,
+          "donor_15": 295,
+          "donor_16": 288,
+          "donor_17": 281,
+          "donor_18": 274,
+          "donor_19": 267,
+          "donor_20": 260,
+          "donor_21": 253,
+          "donor_22": 246,
+          "donor_23": 239,
+          "donor_24": 232,
+          "donor_25": 225,
+          "donor_26": 218,
+          "donor_27": 211,
+          "donor_28": 204,
+          "donor_29": 197,
+          "donor_30": 190,
+          "donor_31": 183,
+          "donor_32": 176,
+          "donor_33": 169,
+          "donor_34": 162,
+          "donor_35": 155,
+          "donor_36": 148,
+          "donor_37": 141,
+          "donor_38": 134,
+          "donor_39": 127,
+          "donor_40": 120,
+          "donor_41": 113,
+          "donor_42": 106,
+          "donor_43": 99,
+          "donor_44": 92,
+          "donor_45": 85,
+          "donor_46": 78,
+          "donor_47": 71,
+          "donor_48": 64,
+          "donor_49": 57
+        },
+        "cell_type": {
+          "type_0": 10,
+          "type_1": 11,
+          "type_2": 12,
+          "type_3": 13,
+          "type_4": 10,
+          "type_5": 11,
+          "type_6": 12,
+          "type_7": 13,
+          "type_8": 10,
+          "type_9": 11,
+          "type_10": 12,
+          "type_11": 13,
+          "type_12": 10
+        }
+      },
+      "omittedLevels": {
+        "donor": 4950
+      },
+      "numericStats": {
+        "pseudotime": {
+          "min": 0.1,
+          "max": 0.9,
+          "mean": 0.44,
+          "q": [
+            0.2,
+            0.4,
+            0.7
+          ]
+        }
+      },
+      "sampleIds": [
+        "cell_1",
+        "cell_2"
+      ],
+      "colorBy": "cell_type",
+      "visibleN": 1000000,
+      "hidden": {}
+    },
+    "expected": "Selection from dataset \"sim1m\" (embedding view).\n20,000 cells selected out of 1,000,000 total (2.00%).\nRegion: x -4.00 to 6.00, y -2.00 to 9.00; centroid (1.00, 3.00).\nCurrently coloured by: cell_type.\n\ndonor composition:\n  donor_00: 400 (2.0%)\n  donor_01: 393 (2.0%)\n  donor_02: 386 (1.9%)\n  donor_03: 379 (1.9%)\n  donor_04: 372 (1.9%)\n  donor_05: 365 (1.8%)\n  donor_06: 358 (1.8%)\n  donor_07: 351 (1.8%)\n  donor_08: 344 (1.7%)\n  donor_09: 337 (1.7%)\n  donor_10: 330 (1.7%)\n  donor_11: 323 (1.6%)\n  ... and 4988 more levels\n\ncell_type composition:\n  type_3: 13 (0.1%)\n  type_7: 13 (0.1%)\n  type_11: 13 (0.1%)\n  type_2: 12 (0.1%)\n  type_6: 12 (0.1%)\n  type_10: 12 (0.1%)\n  type_1: 11 (0.1%)\n  type_5: 11 (0.1%)\n  type_9: 11 (0.1%)\n  type_0: 10 (0.1%)\n  type_4: 10 (0.1%)\n  type_8: 10 (0.1%)\n  ... and 1 more levels\n\npseudotime: min 0.100, q1 0.200, median 0.400, q3 0.700, max 0.900, mean 0.440\n\nExample cell ids: cell_1, cell_2"
+  },
+  {
+    "name": "tie-order",
+    "context": {
+      "datasetId": "sim1m",
+      "view": "embedding",
+      "n": 30,
+      "totalN": 1000000,
+      "bbox": [
+        -4,
+        -2,
+        6,
+        9
+      ],
+      "centroid": [
+        1,
+        3
+      ],
+      "breakdown": {
+        "cluster": {
+          "2": 5,
+          "10": 5,
+          "b": 5,
+          "a": 5,
+          "c": 7
+        }
+      },
+      "omittedLevels": {},
+      "numericStats": {
+        "pseudotime": {
+          "min": 0.1,
+          "max": 0.9,
+          "mean": 0.44,
+          "q": [
+            0.2,
+            0.4,
+            0.7
+          ]
+        }
+      },
+      "sampleIds": [
+        "cell_1",
+        "cell_2"
+      ],
+      "colorBy": "cell_type",
+      "visibleN": 1000000,
+      "hidden": {}
+    },
+    "expected": "Selection from dataset \"sim1m\" (embedding view).\n30 cells selected out of 1,000,000 total (0.00%).\nRegion: x -4.00 to 6.00, y -2.00 to 9.00; centroid (1.00, 3.00).\nCurrently coloured by: cell_type.\n\ncluster composition:\n  c: 7 (23.3%)\n  2: 5 (16.7%)\n  10: 5 (16.7%)\n  b: 5 (16.7%)\n  a: 5 (16.7%)\n\npseudotime: min 0.100, q1 0.200, median 0.400, q3 0.700, max 0.900, mean 0.440\n\nExample cell ids: cell_1, cell_2"
+  },
+  {
+    "name": "null-stats",
+    "context": {
+      "datasetId": "sim1m",
+      "view": "embedding",
+      "n": 12843,
+      "totalN": 1000000,
+      "bbox": [
+        -4,
+        -2,
+        6,
+        9
+      ],
+      "centroid": [
+        1,
+        3
+      ],
+      "breakdown": {
+        "cell_type": {
+          "T cell": 8000,
+          "Monocyte": 4843
+        },
+        "tissue": {
+          "lung": 12000,
+          "liver": 843
+        }
+      },
+      "omittedLevels": {},
+      "numericStats": {
+        "all_null": {
+          "min": null,
+          "max": null,
+          "mean": null,
+          "q": [
+            null,
+            null,
+            null
+          ]
+        },
+        "no_quartiles": {
+          "min": 1,
+          "max": 2,
+          "mean": 1.5
+        },
+        "short_quartiles": {
+          "min": 0,
+          "max": 1,
+          "mean": 0.5,
+          "q": [
+            0.25
+          ]
+        },
+        "missing": null
+      },
+      "sampleIds": [
+        "cell_1",
+        "cell_2"
+      ],
+      "colorBy": "cell_type",
+      "visibleN": 1000000,
+      "hidden": {}
+    },
+    "expected": "Selection from dataset \"sim1m\" (embedding view).\n12,843 cells selected out of 1,000,000 total (1.28%).\nRegion: x -4.00 to 6.00, y -2.00 to 9.00; centroid (1.00, 3.00).\nCurrently coloured by: cell_type.\n\ncell_type composition:\n  T cell: 8,000 (62.3%)\n  Monocyte: 4,843 (37.7%)\n\ntissue composition:\n  lung: 12,000 (93.4%)\n  liver: 843 (6.6%)\n\nall_null: min n/a, q1 n/a, median n/a, q3 n/a, max n/a, mean n/a\nno_quartiles: min 1.000, q1 n/a, median n/a, q3 n/a, max 2.000, mean 1.500\nshort_quartiles: min 0.000, q1 0.250, median n/a, q3 n/a, max 1.000, mean 0.500\nmissing: min n/a, q1 n/a, median n/a, q3 n/a, max n/a, mean n/a\n\nExample cell ids: cell_1, cell_2"
+  },
+  {
+    "name": "large-counts",
+    "context": {
+      "datasetId": "sim1m",
+      "view": "embedding",
+      "n": 1234567,
+      "totalN": 10000000,
+      "bbox": [
+        -123.456,
+        -0.004,
+        98765.4321,
+        0.005
+      ],
+      "centroid": [
+        -12.3456,
+        7.891
+      ],
+      "breakdown": {
+        "tissue": {
+          "lung": 1000000,
+          "liver": 234567
+        }
+      },
+      "omittedLevels": {},
+      "numericStats": {
+        "pseudotime": {
+          "min": 0.1,
+          "max": 0.9,
+          "mean": 0.44,
+          "q": [
+            0.2,
+            0.4,
+            0.7
+          ]
+        }
+      },
+      "sampleIds": [
+        "cell_0",
+        "cell_1000",
+        "cell_2000",
+        "cell_3000",
+        "cell_4000",
+        "cell_5000",
+        "cell_6000",
+        "cell_7000",
+        "cell_8000",
+        "cell_9000",
+        "cell_10000",
+        "cell_11000"
+      ],
+      "colorBy": "cell_type",
+      "visibleN": 10000000,
+      "hidden": {}
+    },
+    "expected": "Selection from dataset \"sim1m\" (embedding view).\n1,234,567 cells selected out of 10,000,000 total (12.35%).\nRegion: x -123.46 to 98765.43, y -0.00 to 0.01; centroid (-12.35, 7.89).\nCurrently coloured by: cell_type.\n\ntissue composition:\n  lung: 1,000,000 (81.0%)\n  liver: 234,567 (19.0%)\n\npseudotime: min 0.100, q1 0.200, median 0.400, q3 0.700, max 0.900, mean 0.440\n\nExample cell ids: cell_0, cell_1000, cell_2000, cell_3000, cell_4000, cell_5000, cell_6000, cell_7000"
+  },
+  {
+    "name": "no-selection",
+    "context": null,
+    "expected": "No cells are currently selected in the viewer."
+  },
+  {
+    "name": "no-selection-empty",
+    "context": {
+      "datasetId": "sim1m",
+      "view": "embedding",
+      "n": 0,
+      "totalN": 1000000,
+      "bbox": [
+        -4,
+        -2,
+        6,
+        9
+      ],
+      "centroid": [
+        1,
+        3
+      ],
+      "breakdown": {
+        "cell_type": {
+          "T cell": 8000,
+          "Monocyte": 4843
+        },
+        "tissue": {
+          "lung": 12000,
+          "liver": 843
+        }
+      },
+      "omittedLevels": {},
+      "numericStats": {
+        "pseudotime": {
+          "min": 0.1,
+          "max": 0.9,
+          "mean": 0.44,
+          "q": [
+            0.2,
+            0.4,
+            0.7
+          ]
+        }
+      },
+      "sampleIds": [
+        "cell_1",
+        "cell_2"
+      ],
+      "colorBy": "cell_type",
+      "visibleN": 1000000,
+      "hidden": {}
+    },
+    "expected": "No cells are currently selected in the viewer."
+  }
+]

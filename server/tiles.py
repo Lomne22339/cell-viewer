@@ -1,4 +1,10 @@
-"""Tile routes and per-cell lookup; ids and field names are validated before they touch the disk."""
+"""Binary tile routes, plus a per-cell lookup of source row and id.
+
+Dataset ids and field names arrive from the URL and are used to build
+filesystem paths, so both are validated against a strict pattern before
+they touch the disk. Concatenating unvalidated path segments is how a
+tile server becomes a file-read primitive.
+"""
 from __future__ import annotations
 
 import json
@@ -12,6 +18,7 @@ from .names import SAFE_NAME
 
 __all__ = ["SAFE_NAME", "router"]
 
+#: path -> (manifest version, mapped array or None when the file is absent).
 _mapped: dict[str, tuple[str, np.ndarray | None]] = {}
 
 
@@ -30,7 +37,10 @@ def _dataset_root(request: Request, dataset_id: str) -> Path:
 
 
 def _send_binary(path: Path) -> Response:
-    # Immutable caching is safe: the page fetches `?v=<manifest version>`; the route ignores `v`.
+    # Immutable caching is safe because the browser asks for chunks as
+    # `...?v=<manifest version>`, and the version changes whenever the bytes
+    # do. The route itself ignores the query string: the URL is the cache key,
+    # the path alone picks the file.
     if not path.is_file():
         raise HTTPException(status_code=404, detail="no such chunk")
     return Response(
@@ -41,6 +51,15 @@ def _send_binary(path: Path) -> Response:
 
 
 def _open_column(path: str, version: str) -> np.ndarray | None:
+    """A cell file memory-mapped, or None when it does not exist.
+
+    Mapped rather than read, so looking up one cell touches a page or two
+    instead of the whole file (some 20 MB of ids for a million cells). The
+    mapping is reused only while the manifest version is the one it was
+    opened under: regenerating a dataset writes new files and a new version,
+    so the next lookup maps the new file, and the old mapping is dropped
+    rather than kept alive holding a replaced file's disk space.
+    """
     hit = _mapped.get(path)
     if hit is not None and hit[0] == version:
         return hit[1]
@@ -52,6 +71,8 @@ def _open_column(path: str, version: str) -> np.ndarray | None:
 
 def _cell_file(root: Path, name: str, version: str, n: int) -> np.ndarray | None:
     arr = _open_column(str(root / "cells" / name), version)
+    # A file of another length was written for other cells (one caught
+    # mid-regeneration, say), so it cannot describe these.
     return arr if arr is not None and arr.shape == (n,) else None
 
 
@@ -86,7 +107,15 @@ def graph(request: Request, dataset_id: str) -> JSONResponse:
 
 @router.get("/dataset/{dataset_id}/cell/{index}")
 def cell(request: Request, dataset_id: str, index: int, v: str | None = None) -> JSONResponse:
-    """A cell's name and source row; `v` is the page's manifest version (a stale one gets 409)."""
+    """A shuffled cell index back to the cell's own name and its row in the
+    source file, which is how a clicked cell is found again in the user's
+    AnnData or Parquet. Tiles written before cell files existed answer nulls
+    rather than an error, so the card can still show the index.
+
+    `v` is the manifest version the page loaded. An index only means
+    something within one version, so a page that is still showing the chunks
+    of a dataset that has since been regenerated gets 409, not the name of
+    whichever cell now sits at that position."""
     root = _dataset_root(request, dataset_id)
     man = json.loads((root / "manifest.json").read_text())
     n = int(man["n"])

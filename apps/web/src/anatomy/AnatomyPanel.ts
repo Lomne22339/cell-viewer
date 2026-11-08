@@ -13,18 +13,25 @@ export interface AnatomyContext {
   registry: OrganRegistry;
   /** Legend-filter visibility; hidden cells never count and are never selected. */
   visible: () => Uint8Array | null;
+  /** The current (filtered) selection. */
   selection: () => Selection | null;
+  /** The raw selection behind it, before the legend filter; identifies who made it. */
   rawSelection: () => Uint32Array | null;
+  /** Replaces the selection; null clears it. */
   select: (indices: Uint32Array | null) => void;
   theme: () => Theme;
 }
 
 export interface AnatomyOptions {
+  /** Smaller layout for the foreground inset. */
   compact?: boolean;
+  /** Offered as "Show in plot" when the panel lives in the side bar. */
   onPopOut?: () => void;
+  /** Start from another panel's organ, drill-down and field choices. */
   initial?: AnatomyState;
 }
 
+/** What a user chose: the organ trail (with drill-downs) and field overrides. */
 export interface AnatomyState {
   trail: string[];
   override: [string, string][];
@@ -36,12 +43,15 @@ const DOUBLE_CLICK_MS = 300;
 export interface AnatomyHandle {
   state: () => AnatomyState;
   setState: (state: AnatomyState) => void;
+  /** Recompute shading (selection, filter or data changed). */
   refresh: () => void;
+  /** Re-colour only (theme changed). */
   restyle: () => void;
   showModel: (id: string) => void;
   destroy: () => void;
 }
 
+/** Shading for a share `t` in [0, 1], from the theme's tested heat ramp. */
 function heat(theme: Theme, t: number): string {
   const stops = theme.heat;
   const x = Math.min(1, Math.max(0, t)) * (stops.length - 1);
@@ -56,7 +66,16 @@ function gradient(theme: Theme): string {
   return `linear-gradient(90deg, ${stops.map(s => `rgb(${s.join(',')})`).join(', ')})`;
 }
 
-/** Segmented anatomy: regions shaded by where cells come from; clicking one selects its cells. */
+/**
+ * Segmented anatomy: an organ figure whose regions are shaded by where the
+ * cells come from, and which selects cells when a region is clicked.
+ *
+ * The coupling runs both ways. Lasso some cells and the figure shows which
+ * organs or chambers they belong to; click a chamber and exactly those cells
+ * become the selection, which drives the summary and the chat. Nothing here
+ * knows which organs exist — the registry supplies them and the matcher maps
+ * each one to whichever categorical field describes it best.
+ */
 export function createAnatomyPanel(
   root: HTMLElement,
   ctx: AnatomyContext,
@@ -77,6 +96,8 @@ export function createAnatomyPanel(
     (opts.initial?.override ?? []).filter(([m, f]) => ctx.registry.has(m) && ctx.store.codes.has(f))
   );
 
+  // Open where the other panel was, else on the body if anything in this
+  // dataset matches it, otherwise on the first organ that does.
   const initialTrail = opts.initial?.trail.filter(id => ctx.registry.has(id)) ?? [];
   let trail: string[] = initialTrail.length
     ? initialTrail
@@ -151,7 +172,7 @@ export function createAnatomyPanel(
     const auto = autoMatch.get(m.id);
     const current = override.get(m.id) ?? '';
     fieldSelect.innerHTML =
-      `<option value="">auto${auto ? ` (${esc(auto.field)})` : ' (none matches)'}</option>` +
+      `<option value="">auto${auto ? ` (${esc(auto.field)})` : ' — none matches'}</option>` +
       categorical
         .map(f => `<option value="${esc(f.name)}"${f.name === current ? ' selected' : ''}>${esc(f.name)}</option>`)
         .join('');
@@ -208,6 +229,12 @@ export function createAnatomyPanel(
     scaleMax.textContent = max && scopeTotal ? `${((max / scopeTotal) * 100).toFixed(0)}%` : 'max';
   };
 
+  /**
+   * Cells that belong to this organ at all, when the dataset says so — a
+   * tissue field naming the heart restricts the heart figure to heart cells,
+   * so a generic region label elsewhere ("medulla" of a kidney) cannot light
+   * up a brain region.
+   */
   const withinFor = (m: OrganModel, regionField: string): { codes: Uint16Array; levels: Uint8Array } | null => {
     const scope = organScope(m, categorical, regionField);
     const codes = scope ? ctx.store.codes.get(scope.field) : undefined;
@@ -247,7 +274,9 @@ export function createAnatomyPanel(
       return;
     }
     const codes = ctx.store.codes.get(match.field)!;
-    // The raw selection is every region cell, hidden or not; the view applies the legend filter.
+    // The raw selection is every cell of the region, hidden or not; the view
+    // intersects it with the legend filter, so un-hiding a category brings
+    // that category's cells in the region back, exactly as for a lasso.
     ownIndices = cellsInSegments(
       codes,
       match.match.levelToSegment,
@@ -259,6 +288,12 @@ export function createAnatomyPanel(
     ctx.select(ownIndices.length ? ownIndices : null);
   };
 
+  /**
+   * Leaving a figure (another organ, a breadcrumb, a new field) drops a region
+   * selection made on it: its outline is about to disappear, and an invisible
+   * selection shading the next figure would be a puzzle. A selection made
+   * elsewhere — a lasso — is left alone.
+   */
   const releaseOwnSelection = (): void => {
     if (pendingClick) {
       clearTimeout(pendingClick);
@@ -301,7 +336,10 @@ export function createAnatomyPanel(
           pendingClick = null;
         }
         const detail = ev instanceof MouseEvent ? ev.detail : 0;
+        // The second click of a double-click belongs to the double-click.
         if (detail >= 2) return;
+        // Only a segment that opens a detailed figure has a double-click to
+        // wait for; everything else, and keyboard activation, acts at once.
         const seg = model()?.segments[s];
         if (detail === 0 || !seg?.drillDown || !ctx.registry.has(seg.drillDown)) {
           apply();
@@ -336,6 +374,11 @@ export function createAnatomyPanel(
     renderActions();
   };
 
+  /**
+   * Opening an organ keeps the current selection: whether it is a lasso or a
+   * click on that organ in the body, the detailed figure then shows where
+   * within the organ those cells sit.
+   */
   const drill = (id: string): void => {
     trail = [...trail, id];
     selected = new Set();
@@ -382,6 +425,8 @@ export function createAnatomyPanel(
 
   const handle: AnatomyHandle = {
     refresh() {
+      // A selection made anywhere else (a lasso, the legend) is not a region
+      // selection any more, so the outlined segments are cleared.
       if (selected.size && ctx.rawSelection() !== ownIndices) {
         selected = new Set();
         ownIndices = null;

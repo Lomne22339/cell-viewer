@@ -1,4 +1,19 @@
-"""Converts a dataset into pre-shuffled chunks: any prefix is a uniform sample."""
+"""Convert a dataset into pre-shuffled binary chunks the browser can upload
+to the GPU without parsing.
+
+Two properties matter and are enforced by tests:
+  1. One permutation is applied to every column, so rows stay aligned.
+  2. That permutation is uniform, so the first K points of the output are an
+     unbiased sample. Level of detail depends entirely on this.
+
+Before shuffling, `write_tiles` makes the input servable: coordinates become
+float32 rows of two, cells without finite coordinates are dropped, and field
+names that could not be a URL segment are renamed. Every cell keeps its source
+row and, when the source named it, its id, so a cell clicked in the viewer can
+be found again in the user's own file. The manifest is strict
+JSON, and its `version` changes whenever any written byte does, so chunks can
+be cached as immutable under `?v=<version>`.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -18,10 +33,13 @@ from .simulate import PrincipalGraph, SimDataset
 MAX_LEVELS = 65_535
 MAX_ROWS = int(np.iinfo(np.uint32).max)
 VERSION_HEX = 16
+#: Column names that conventionally hold a cell's own name, in the order a
+#: Parquet file is searched for one when no id column is given.
 ID_COLUMNS = ("cell_id", "barcode", "obs_names")
 
 
 class TooManyLevelsError(ValueError):
+    """A column has more distinct values than a uint16 code can hold."""
 
     def __init__(self, field: str, levels: int) -> None:
         super().__init__(
@@ -37,7 +55,10 @@ def _warn(message: str) -> None:
 
 
 def check_dataset_id(dataset_id: str) -> str:
-    """Dataset ids name a directory and URL segment, so unsafe ones are refused, not slugged."""
+    """The id names a directory and a URL segment, so it must already be
+    safe. It is refused rather than slugged: the caller chose it and will
+    type it into the viewer, so silently serving it under another name would
+    only confuse."""
     if not isinstance(dataset_id, str) or not is_safe(dataset_id):
         raise ValueError(
             f"dataset id {dataset_id!r} is not usable in a URL or a path: use 1 to 64 "
@@ -51,6 +72,10 @@ def _permuted(arr: np.ndarray | None, perm: np.ndarray) -> np.ndarray | None:
 
 
 def shuffle_dataset(ds: SimDataset, seed: int = 0) -> SimDataset:
+    """Every column under one permutation, the cell ids and source rows
+    included, so a cell's name stays on the row with its coordinates. Only
+    the permutation draws from the generator, so the shuffle for a seed does
+    not depend on which optional columns are present."""
     rng = np.random.default_rng(seed)
     perm = rng.permutation(ds.n)
     return SimDataset(
@@ -76,6 +101,16 @@ def _checked_ids(ids, n: int) -> np.ndarray | None:
 
 
 def _utf8(ids: np.ndarray) -> np.ndarray:
+    """Cell ids as fixed-width UTF-8 bytes, `S<longest encoded id>`.
+
+    A fixed-width bytes array saves without pickling and loads memory-mapped,
+    so the server can read one id without reading them all. Encoding to UTF-8
+    rather than keeping NumPy's UTF-32 strings keeps any non-ASCII name intact
+    at a quarter of the size for the usual ASCII barcode. Bytes are taken to
+    be UTF-8 already. ASCII is valid UTF-8, so an all-ASCII column takes the
+    plain cast, which is more than twice as fast, and only a column that
+    refuses it pays for the full encode.
+    """
     if ids.dtype.kind == "S":
         return ids
     text = ids.astype(np.str_)
@@ -86,7 +121,20 @@ def _utf8(ids: np.ndarray) -> np.ndarray:
 
 
 def _servable(ds: SimDataset) -> SimDataset:
-    """Dataset as the browser needs it: float32 (n, 2) xy, non-finite cells dropped, safe names."""
+    """The dataset as the browser needs it.
+
+    Coordinates are float32 with shape (n, 2): the browser reinterprets the
+    bytes as a Float32Array, so float64 input would read as garbage at twice
+    the expected length. Every column must be n long, or the mask below and
+    the shared permutation would misalign rows. A cell without finite
+    coordinates cannot be drawn and would poison the bounds with NaN, so it
+    is dropped from every column at once, its id included. Field names become
+    URL segments and directories, so unsafe ones are renamed.
+
+    Each kept cell also records its source row, the row it had in the input
+    before anything was dropped, which is how a user finds it again in their
+    own file when it has no name.
+    """
     xy = np.asarray(ds.xy, dtype=np.float32)
     if xy.ndim != 2 or xy.shape[1] != 2:
         raise ValueError(f"coordinates must have shape (n, 2), got shape {xy.shape}")
@@ -135,6 +183,9 @@ def _servable(ds: SimDataset) -> SimDataset:
 
 
 def _finite_range(values: np.ndarray) -> dict:
+    """Range over the finite values only. NaN marks a missing value and stays
+    in the chunk; it must not turn the colour scale into NaN. A column with no
+    finite value at all gets [0, 0]."""
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return {"min": 0.0, "max": 0.0}
@@ -142,6 +193,9 @@ def _finite_range(values: np.ndarray) -> dict:
 
 
 def _atomic_write(path: Path, write: Callable[[Path], object]) -> None:
+    """Write to a sibling and rename over the target, so a server reading
+    while tiles are regenerated sees the old file or the new one, never half
+    of one."""
     tmp = path.with_name(path.name + ".tmp")
     write(tmp)
     os.replace(tmp, path)
@@ -168,12 +222,22 @@ def _write_column(
 
 
 def _save_npy(arr: np.ndarray, path: Path) -> None:
-    """np.save appends `.npy` to a bare name; writing to an open file keeps the bytes where told."""
+    """np.save given a name appends `.npy` unless the name already ends so,
+    which would leave the bytes beside the temporary file `_atomic_write`
+    renames. Given an open file it writes exactly where it is told."""
     with open(path, "wb") as f:
         np.save(f, arr, allow_pickle=False)
 
 
 def _write_cells(base: Path, ds: SimDataset, hasher) -> None:
+    """Each cell's source row (`rows.npy`, uint32) and, when the source named
+    its cells, its id (`ids.npy`, fixed-width UTF-8), both in shuffled order.
+
+    Whole `.npy` files rather than chunks: the browser never downloads them,
+    the server looks one cell up at a time through a memory map. Both feed
+    the version hash, so renaming a single cell moves the version as any
+    other changed byte does.
+    """
     base.mkdir(parents=True, exist_ok=True)
     files = {"rows.npy": ds.source_rows.astype(np.uint32, copy=False)}
     if ds.ids is not None:
@@ -192,8 +256,25 @@ def write_tiles(
     chunk_size: int = 250_000,
     graph: PrincipalGraph | None = None,
     seed: int = 0,
+    extra: dict | None = None,
 ) -> dict:
-    """Shuffle `ds` and write chunks plus a manifest whose `version` hashes every byte written."""
+    """Shuffle `ds` and write it as chunks plus a manifest under
+    `out_dir/dataset_id`, with each cell's source row and id under `cells/`.
+
+    `extra`, if given, is recorded in the manifest as `meta`: what a dataset
+    says about itself (the organ view marks its simulated datasets
+    `synthetic`). It is part of the hashed body, so changing it moves the
+    version like any other change.
+
+    The manifest's `version` is the first 16 hex digits of a SHA-256 over
+    every chunk and cell file written (its path, dtype, length and bytes),
+    then the manifest body, then the graph. It is a pure function of the output:
+    rewriting identical tiles keeps the version, so browser caches stay warm,
+    while any change to any byte, in any chunk of any column, moves it. That
+    is what makes `immutable` caching of `chunk/...?v=<version>` safe.
+    Hashing everything is cheap next to the shuffle (about 20 MB per million
+    cells for the simulated datasets).
+    """
     check_dataset_id(dataset_id)
     _check_codes(ds)
     ds = _servable(ds)
@@ -235,6 +316,8 @@ def write_tiles(
         "hasGraph": graph is not None,
         "cellIds": sh.ids is not None,
     }
+    if extra:
+        manifest["meta"] = dict(extra)
 
     graph_json = None
     if graph is not None:
@@ -246,7 +329,8 @@ def write_tiles(
             "leaves": [int(i) for i in graph.leaves],
         }, allow_nan=False)
 
-    # allow_nan=False: the browser's JSON.parse rejects NaN and Infinity.
+    # allow_nan=False: the browser's JSON.parse rejects NaN and Infinity, so
+    # failing here is better than writing a manifest no client can read.
     hasher.update(json.dumps(manifest, sort_keys=True, allow_nan=False).encode())
     if graph_json is not None:
         hasher.update(graph_json.encode())
@@ -262,6 +346,12 @@ def write_tiles(
 
 
 def _check_codes(ds: SimDataset) -> None:
+    """Every code must index its level list and fit a uint16.
+
+    The writer casts codes to uint16; a negative code, one past the end of the
+    level list, or one wider than 16 bits would wrap silently and colour cells
+    as the wrong population, so it is an error instead.
+    """
     for field, codes in ds.codes.items():
         levels = len(ds.levels.get(field, []))
         if levels > MAX_LEVELS:
@@ -276,6 +366,13 @@ def _check_codes(ds: SimDataset) -> None:
 
 
 def _prune(root: Path, manifest: dict) -> None:
+    """Removes files the manifest no longer references.
+
+    Regenerating a dataset with fewer fields or fewer chunks would otherwise
+    leave the old ones on disk: harmless to the browser, which only follows the
+    manifest, but confusing to anyone reading the directory, and wasted space.
+    Runs after the manifest is written, so nothing it deletes is reachable.
+    """
     keep = {f"{c:03d}.bin" for c in range(manifest["chunks"])}
 
     def prune_chunks(d: Path) -> None:
@@ -302,6 +399,12 @@ def _prune(root: Path, manifest: dict) -> None:
 
 
 def _encode_categorical(values, field: str) -> tuple[np.ndarray, list[str]]:
+    """String column to uint16 codes plus a level dictionary.
+
+    A column with more distinct values than uint16 can hold is rejected
+    rather than truncated: a silently wrapped barcode column would colour
+    the plot with plausible-looking nonsense.
+    """
     labels = [str(v) for v in values]
     levels = sorted(set(labels))
     if len(levels) > MAX_LEVELS:
@@ -314,7 +417,14 @@ def _encode_categorical(values, field: str) -> tuple[np.ndarray, list[str]]:
 def _encode_fields(
     fields: list[str], column: Callable[[str], np.ndarray], explicit: bool
 ) -> tuple[dict[str, np.ndarray], dict[str, list[str]]]:
-    """A named field that cannot be encoded is an error; an auto-detected one is skipped."""
+    """Encode categorical fields.
+
+    A field the user named explicitly that cannot be encoded is an error. An
+    auto-detected one — a per-cell column such as a clonotype, or a barcode
+    column in an h5ad, whose cells are named by obs_names instead — is skipped
+    with a warning, because a whole file should not fail to load over a
+    column nobody asked to colour by.
+    """
     codes: dict[str, np.ndarray] = {}
     levels: dict[str, list[str]] = {}
     for field_name in fields:
@@ -342,6 +452,10 @@ def dataset_from_h5ad(
     obs_fields: list[str] | None = None,
     numeric_fields: list[str] | None = None,
 ) -> SimDataset:
+    """Read an AnnData file. A field list left as None is auto-detected:
+    non-numeric obs columns are categorical, numeric ones are numeric. Cells
+    are named by obs_names, the index rather than a column, so the names can
+    never be ingested as a field by mistake."""
     import anndata
 
     adata = anndata.read_h5ad(path)
@@ -358,7 +472,8 @@ def dataset_from_h5ad(
     xy = np.ascontiguousarray(emb[:, :2], dtype=np.float32)
 
     obs = adata.obs
-    # pandas extension dtypes (category) are not numpy dtypes, so np.issubdtype raises; ask pandas.
+    # pandas extension dtypes (category in particular) are not valid numpy
+    # dtypes, so np.issubdtype raises on them. Ask pandas instead.
     from pandas.api.types import is_numeric_dtype
 
     explicit_obs = obs_fields is not None
@@ -384,6 +499,14 @@ def dataset_from_h5ad(
 def _pick_id_column(
     cols: list[str], id_column: str | None, claimed: set[str]
 ) -> str | None:
+    """The column that names each cell, or None.
+
+    A column the user named is required to exist, and may not also be one of
+    the fields they asked for: one column cannot be both a cell's name and
+    something to colour by. Without one, the first of `ID_COLUMNS` present
+    is used, unless the user claimed it as a field or coordinate. Picking it
+    is only a convention, so an explicit request outranks it.
+    """
     if id_column is not None:
         _require_columns([id_column], cols, "id column")
         if id_column in claimed:
@@ -396,6 +519,8 @@ def _pick_id_column(
 
 
 def _id_strings(column) -> np.ndarray:
+    """An Arrow column as one string per cell. Numbers become their decimal
+    text, and a missing id becomes the empty string rather than "None"."""
     import pyarrow as pa
     import pyarrow.compute as pc
 
@@ -411,6 +536,14 @@ def dataset_from_parquet(
     numeric_fields: list[str] | None = None,
     id_column: str | None = None,
 ) -> SimDataset:
+    """Read a Parquet table with one row per cell. Each field list left as
+    None is auto-detected independently, exactly as for h5ad: naming only
+    the numeric fields still picks up every categorical column.
+
+    Cells are named by `id_column`, or else by the first of `cell_id`,
+    `barcode` and `obs_names` present. That column is never also ingested as
+    a field: a barcode is unique per cell, so as a categorical it would only
+    have been skipped for having too many levels."""
     import pyarrow.parquet as pq
 
     table = pq.read_table(path)
@@ -452,8 +585,57 @@ def dataset_from_parquet(
     return SimDataset(xy=xy, codes=codes, levels=levels, numeric=numeric, ids=ids)
 
 
+def graph_from_json(path) -> PrincipalGraph:
+    """Read a principal graph file in the format `write_tiles` writes to
+    `graph.json` (`nodes`, `edges`, `root`, `branchPoints`, `leaves`).
+
+    Every index is checked against the node count, because the viewer indexes
+    straight into `nodes` and a stray index would draw a line to nowhere.
+    Raises ValueError saying what is wrong.
+    """
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
+        raise ValueError(f"cannot read graph file {path}: {err}") from err
+    if not isinstance(raw, dict):
+        raise ValueError("a graph file must be a JSON object")
+    missing = [k for k in ("nodes", "edges", "root") if k not in raw]
+    if missing:
+        raise ValueError(f"graph file is missing: {', '.join(missing)}")
+    try:
+        nodes = np.asarray(raw["nodes"], dtype=np.float64)
+    except (TypeError, ValueError) as err:
+        raise ValueError("graph 'nodes' must be a list of [x, y] numbers") from err
+    if nodes.ndim != 2 or nodes.shape[1] != 2 or nodes.shape[0] == 0 or not np.isfinite(nodes).all():
+        raise ValueError("graph 'nodes' must be a non-empty list of finite [x, y] pairs")
+    count = nodes.shape[0]
+
+    def index(value, what: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < count:
+            raise ValueError(f"graph {what} {value!r} is not a node index in 0..{count - 1}")
+        return value
+
+    edges: list[tuple[int, int]] = []
+    for e in raw["edges"]:
+        if not isinstance(e, (list, tuple)) or len(e) != 2:
+            raise ValueError(f"graph edge {e!r} must be a pair of node indices")
+        edges.append((index(e[0], "edge end"), index(e[1], "edge end")))
+    return PrincipalGraph(
+        nodes=nodes,
+        edges=edges,
+        root=index(raw["root"], "root"),
+        branch_points=[index(i, "branch point") for i in raw.get("branchPoints", [])],
+        leaves=[index(i, "leaf") for i in raw.get("leaves", [])],
+    )
+
+
 def dataset_label(n: int) -> str:
-    """Size part of a dataset id (`1m`, `1500k`, `500`); it never rounds, so ids cannot collide."""
+    """The exact size part of a generated dataset id: `1m`, `1500k`, `500`.
+
+    It never rounds. `m` means a whole number of millions and `k` a whole
+    number of thousands, so two different sizes can never share an id; the
+    old truncating label sent 1,000,000 and 1,500,000 both to `sim1m`.
+    """
     if n > 0 and n % 1_000_000 == 0:
         return f"{n // 1_000_000}m"
     if n > 0 and n % 1000 == 0:
@@ -462,6 +644,10 @@ def dataset_label(n: int) -> str:
 
 
 def _field_list(values: list[str] | None) -> list[str] | None:
+    """`--obs-fields a,b c` gives ['a', 'b', 'c']. Commas split one argument;
+    separate arguments are separate fields. A name containing a space is
+    passed as one quoted argument (`"cell type"`), so spaces inside an
+    argument do not split it."""
     if values is None:
         return None
     return [f.strip() for v in values for f in v.split(",") if f.strip()]
@@ -474,8 +660,11 @@ def _main() -> None:
     ap.add_argument("--out", default="data/tiles")
     ap.add_argument("--chunk-size", type=int, default=250_000)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--sizes", type=int, nargs="+", default=[100_000, 1_000_000],
-                    help="embedding dataset sizes to generate")
+    ap.add_argument("--sizes", type=int, nargs="*", default=[100_000, 1_000_000],
+                    help="embedding dataset sizes to generate (none, to skip them)")
+    ap.add_argument("--organ-size", type=int, default=0,
+                    help="cells per organ for the Organ View's synthetic heart, brain and liver "
+                         "(a UMAP and a trajectory each), 0 to skip")
     ap.add_argument("--traj-size", type=int, default=500_000)
     ap.add_argument("--atlas-size", type=int, default=0,
                     help="multi-organ atlas size (tissue + anatomical_region), 0 to skip")
@@ -490,6 +679,9 @@ def _main() -> None:
     ap.add_argument("--numeric-fields", nargs="+", metavar="FIELD",
                     help="numeric columns to ingest, comma or space separated "
                          "(default: every numeric column not in --obs-fields)")
+    ap.add_argument("--graph", metavar="FILE",
+                    help="principal graph JSON to attach to an ingested trajectory dataset "
+                         "(nodes, edges, root, branchPoints, leaves)")
     ap.add_argument("--id-column", metavar="COLUMN",
                     help="Parquet column naming each cell, never ingested as a field "
                          f"(default: the first of {', '.join(ID_COLUMNS)} present; "
@@ -497,6 +689,8 @@ def _main() -> None:
     args = ap.parse_args()
     obs_fields = _field_list(args.obs_fields)
     numeric_fields = _field_list(args.numeric_fields)
+    if args.graph and not (args.h5ad or args.parquet):
+        ap.error("--graph applies only when ingesting with --h5ad or --parquet")
     if args.id_column is not None and not args.parquet:
         ap.error("--id-column applies only when ingesting with --parquet; "
                  "an h5ad names its cells by obs_names")
@@ -515,8 +709,10 @@ def _main() -> None:
                   dataset_from_parquet(args.parquet, obs_fields=obs_fields,
                                        numeric_fields=numeric_fields,
                                        id_column=args.id_column))
-            man = write_tiles(ds, args.out, args.id, args.chunk_size, seed=args.seed)
+            graph = graph_from_json(args.graph) if args.graph else None
+            man = write_tiles(ds, args.out, args.id, args.chunk_size, graph=graph, seed=args.seed)
         except (KeyError, ValueError) as err:
+            # A data problem, not a bug: say what is wrong without a traceback.
             sys.exit(f"error: {err.args[0] if err.args else err}")
         print(f"wrote {args.id}: {man['n']} cells, {man['chunks']} chunks, "
               f"fields {sorted(man['categorical'])}")
@@ -528,6 +724,8 @@ def _main() -> None:
 
     from .simulate import simulate_atlas, simulate_embedding, simulate_trajectory
 
+    # Name every dataset before writing any, so a collision fails cleanly
+    # instead of one size silently overwriting another.
     sims = [(f"sim{dataset_label(n)}", n) for n in args.sizes]
     traj_id = f"traj{dataset_label(args.traj_size)}" if args.traj_size else None
     atlas_id = f"atlas{dataset_label(args.atlas_size)}" if args.atlas_size else None
@@ -552,6 +750,17 @@ def _main() -> None:
         man = write_tiles(ds, args.out, atlas_id, args.chunk_size, seed=args.seed)
         print(f"wrote {atlas_id}: {man['n']} cells, "
               f"{len(man['categorical']['tissue']['levels'])} organs")
+
+    if args.organ_size:
+        from .organs import build_organ_tiles
+
+        try:
+            made = build_organ_tiles(args.out, args.organ_size, args.chunk_size, seed=args.seed)
+        except ValueError as err:
+            ap.error(str(err))
+        for organ, pair in made.items():
+            print(f"wrote {pair['umap']['datasetId']} and {pair['trajectory']['datasetId']}: "
+                  f"{pair['umap']['n']} synthetic cells each ({organ})")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,16 @@
 import type { Manifest } from './manifest';
 
-/** Columnar container for every cell: no per-cell objects, every column is a typed array. */
+/**
+ * Columnar container for every cell in a dataset.
+ *
+ * There is deliberately no per-cell object anywhere in this class. At one
+ * million cells an array of objects costs more time in allocation and GC
+ * than the entire render loop, and it is the single mistake that caps most
+ * scatter plots at a hundred thousand points.
+ */
 export class CellStore {
   readonly datasetId: string;
+  /** The manifest version these chunks belong to; '' for unversioned tiles. */
   readonly version: string;
   readonly n: number;
   readonly bounds: [number, number, number, number];
@@ -13,9 +21,20 @@ export class CellStore {
   readonly levels = new Map<string, string[]>();
   readonly numeric = new Map<string, Float32Array>();
   readonly numericRange = new Map<string, [number, number]>();
+  /** RGBA, rewritten whenever colour-by or the selection mask changes. */
   readonly color: Uint8Array;
-  /** Length of the fully-written prefix: `[0, loadedCount)` is the only real data. */
+  /**
+   * Length of the contiguous, fully-written prefix of every column.
+   *
+   * Everything downstream — the renderer, the grid index, selection, the chat
+   * context — treats `[0, loadedCount)` as real data, so this must never run
+   * ahead of what has actually been written. Chunks are fetched in parallel and
+   * can complete out of order, so counting bytes received would let cell 0 be
+   * "loaded" because chunk 3 arrived, and phantom cells would appear at the
+   * origin.
+   */
   loadedCount = 0;
+  /** Chunks successfully written, in any order. For progress reporting only. */
   loadedChunks = 0;
   failedChunks: number[] = [];
   private readonly chunkLoaded: Uint8Array;
@@ -41,6 +60,12 @@ export class CellStore {
     }
   }
 
+  /**
+   * Records a chunk as fully written and advances the contiguous prefix.
+   *
+   * The prefix only moves when the gap in front of it is filled, so a chunk
+   * that arrives early is held back until its predecessors land.
+   */
   markChunkLoaded(c: number): void {
     if (c < 0 || c >= this.chunks || this.chunkLoaded[c]) return;
     this.chunkLoaded[c] = 1;
@@ -51,6 +76,7 @@ export class CellStore {
     this.loadedCount = Math.min(this.n, next * this.chunkSize);
   }
 
+  /** True once every chunk has been written. */
   isComplete(): boolean {
     return this.loadedChunks === this.chunks;
   }
@@ -60,7 +86,11 @@ export class CellStore {
     return { start, count: Math.max(0, Math.min(this.chunkSize, this.n - start)) };
   }
 
-  // Ids are made on demand: a million strings up front would outweigh every typed array.
+  /**
+   * Ids are generated on demand for at most `max` indices. Building one
+   * million strings up front would cost more memory than every typed array
+   * in this store combined, and nothing needs them.
+   */
   sampleIds(indices: Uint32Array, max: number): string[] {
     const take = Math.min(max, indices.length);
     const out = new Array<string>(take);

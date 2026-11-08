@@ -6,15 +6,24 @@ import type { ScatterCanvas } from '../views/ScatterCanvas';
 
 export type Mode = 'pan' | 'box' | 'lasso';
 
+/** Same tolerance as the click detector: anything smaller is a click. */
 const CLICK_TOLERANCE_PX = 5;
 
 export interface LassoOptions {
   onComplete: (shape: QueryShape) => void;
   onCancel?: () => void;
+  /** Outline colour for the in-progress shape; read per draw so a theme change applies. */
   previewColor?: () => [number, number, number];
 }
 
-/** Captures a box or freehand lasso in screen space and converts it to world space. */
+/**
+ * Captures a box drag or a freehand lasso in screen space, converts it to
+ * world space, and hands the resulting shape to the selection worker.
+ *
+ * The in-progress outline is drawn as a deck.gl overlay layer rather than as
+ * a DOM element, so it stays locked to the data if the view moves mid-drag
+ * instead of sliding away from the cells it encloses.
+ */
 export class LassoController {
   mode: Mode = 'pan';
   private drawing = false;
@@ -50,6 +59,8 @@ export class LassoController {
     if (this.mode === 'pan' || ev.button !== 0) return;
     ev.preventDefault();
     try {
+      // Capture keeps the drag alive if the pointer leaves the canvas. Some
+      // inputs refuse it; the drag is still worth having without it.
       this.el.setPointerCapture(ev.pointerId);
     } catch {
       /* not fatal */
@@ -65,6 +76,7 @@ export class LassoController {
       this.screenPts = [this.screenPts[0], this.screenPts[1], x, y];
     } else {
       const n = this.screenPts.length;
+      // Skip sub-pixel moves; they add vertices without adding shape.
       const dx = x - this.screenPts[n - 2];
       const dy = y - this.screenPts[n - 1];
       if (dx * dx + dy * dy < 4) return;
@@ -73,6 +85,13 @@ export class LassoController {
     this.schedulePreview();
   };
 
+  /**
+   * Coalesces preview redraws to one per animation frame.
+   *
+   * A fast drag emits pointer events faster than the compositor paints, and
+   * redrawing per event means the outline lags behind the cursor rather than
+   * leading it.
+   */
   private schedulePreview(): void {
     if (this.previewFrame) return;
     this.previewFrame = requestAnimationFrame(() => {
@@ -93,7 +112,9 @@ export class LassoController {
     } catch {
       // The pointer may already be released; not worth failing a selection over.
     }
-    // A barely-moved press is a click: leave it to the click handler, not an empty box query.
+    // A press that barely moved is a click, not a drag: leave it to the click
+    // handler (which opens the cell card) instead of running a tiny box query
+    // whose empty result would wipe the user's selection.
     const shape = this.screenExtent() < CLICK_TOLERANCE_PX ? null : this.toWorldShape();
     this.canvas.setSelectionOverlay([]);
     this.screenPts = [];
@@ -104,6 +125,7 @@ export class LassoController {
     this.opts.onComplete(shape);
   };
 
+  /** Larger side of the drawn shape's screen bounding box. */
   private screenExtent(): number {
     let x0 = Infinity;
     let y0 = Infinity;
@@ -118,7 +140,11 @@ export class LassoController {
     return Number.isFinite(x0) ? Math.max(x1 - x0, y1 - y0) : 0;
   }
 
-  /** Escape cancels a drag; capture-phase and stopped so it does not also close the cell card. */
+  /**
+   * Escape cancels a drag in progress. Registered in the capture phase and
+   * stopped there, so the same keypress does not also close the cell card.
+   * With no drag in progress it does nothing and the card can handle it.
+   */
   private onKey = (ev: KeyboardEvent): void => {
     if (ev.key !== 'Escape' || !this.drawing) return;
     ev.stopImmediatePropagation();

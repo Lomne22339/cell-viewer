@@ -37,20 +37,40 @@ export interface ScatterViewOptions {
   themes: ThemeStore;
   registry: OrganRegistry;
   onContext?: (ctx: SelectionContext | null) => void;
+  /**
+   * Hides the side panel, for a view that shares the screen with others. The
+   * lasso and box tools live in that panel, so they return with `setCompact(false)`.
+   */
+  compact?: boolean;
   chat?: { setContext: (ctx: SelectionContext | null) => void };
 }
 
+/** Candidate cells fetched per click; the first visible one wins. */
 const CLICK_CANDIDATES = 32;
+/**
+ * When every candidate is hidden by the legend filter (an isolated rare type
+ * inside a dense cluster), the lookup widens by this factor up to this cap
+ * rather than reporting an empty click on a dot that is plainly visible.
+ */
 const CLICK_WIDEN = 8;
 const CLICK_CANDIDATES_MAX = 16_384;
 
-/** Composes the canvas, worker, toolbar and panels; the store holds the raw selection ∩ visible. */
+/**
+ * Composes the canvas, the selection worker, the toolbar and the panels.
+ *
+ * Nothing here owns selection state: the canvas, the summary, the chat panel
+ * and the anatomy figure all subscribe to one `SelectionStore`. This class
+ * keeps only the *raw* selection (what the lasso or a region click produced)
+ * so that relaxing the legend filter can restore cells the filter had removed;
+ * the store always holds raw ∩ visible.
+ */
 export class ScatterView {
   readonly canvas: ScatterCanvas;
   readonly selectionStore: SelectionStore;
   readonly filter: CategoryFilter;
   protected side: HTMLElement;
   protected holder: HTMLElement;
+  /** Where subclasses put their own side-panel sections (above Display). */
   protected extraPanel: HTMLElement;
   protected client = new SelectionClient();
   private lasso: LassoController;
@@ -68,15 +88,18 @@ export class ScatterView {
   private lastLegendUpdate = 0;
   private visible: Uint8Array | null = null;
   private visibleBuffer: Uint8Array | null = null;
+  /** Second reusable mask for legend counts, so a filter click allocates nothing. */
   private legendBuffer: Uint8Array | null = null;
   private lastAnatomyRefresh = 0;
   private raw: { indices: Uint32Array; shape: SelectionShape } | null = null;
   private pickedCell: number | null = null;
   private clickSeq = 0;
   private selectionSeq = 0;
+  /** The picked cell's name and source row, once the server has answered. */
   private identity: { cell: number; info: CellInfo | null; pending: boolean } | null = null;
   private identityAbort: AbortController | null = null;
   private unsubscribe: (() => void)[] = [];
+  private rootEl: HTMLElement;
 
   constructor(
     root: HTMLElement,
@@ -84,6 +107,8 @@ export class ScatterView {
     protected opts: ScatterViewOptions
   ) {
     root.innerHTML = `<div class="canvas-holder"></div><aside class="side" aria-label="Controls"></aside>`;
+    this.rootEl = root;
+    root.classList.toggle('compact', !!opts.compact);
     this.holder = root.querySelector<HTMLElement>('.canvas-holder')!;
     this.side = root.querySelector<HTMLElement>('.side')!;
 
@@ -93,6 +118,10 @@ export class ScatterView {
     this.selectionStore = new SelectionStore(store.n, store.xy);
     this.filter = new CategoryFilter(store.levels);
 
+    // Everything the canvas's callbacks touch is built before the canvas is.
+    // deck.gl may emit onViewStateChange as soon as it initialises, and a
+    // handler reaching for a field that is still undefined would throw from
+    // inside the constructor.
     this.toolbar = createToolbar(this.side, {
       onMode: m => this.lasso.setMode(m),
       onZoomToSelection: () => this.zoomToSelection(),
@@ -101,14 +130,16 @@ export class ScatterView {
       onInset: () => this.inset?.toggle()
     });
 
-    const colorBody = createSection(this.side, 'color', 'Color and legend');
-    this.buildColorPicker(colorBody);
-    this.legend = createLegend(colorBody, this.filter);
+    const colourBody = createSection(this.side, 'colour', 'Colour and legend');
+    this.buildColorPicker(colourBody);
+    this.legend = createLegend(colourBody, this.filter);
 
     const anatomyBody = createSection(this.side, 'anatomy', 'Anatomy');
     const selectionBody = createSection(this.side, 'selection', 'Selection');
     this.summary = createSelectionSummary(selectionBody);
-    // Added after super() returns: a subclass's field initializers would otherwise reset these.
+    // Subclasses add their sections here, after super() returns: anything a
+    // subclass built during this constructor would be reset by its own class
+    // fields initialising afterwards.
     this.extraPanel = document.createElement('div');
     this.extraPanel.style.display = 'contents';
     this.side.appendChild(this.extraPanel);
@@ -150,6 +181,7 @@ export class ScatterView {
       theme: () => this.theme
     };
     this.anatomy = createAnatomyPanel(anatomyBody, anatomyCtx, {
+      // The plot's copy starts on the same organ, drill-down and field.
       onPopOut: () => {
         this.inset?.show('anatomy');
         if (this.anatomy) this.insetAnatomy?.setState(this.anatomy.state());
@@ -186,14 +218,25 @@ export class ScatterView {
     this.summary.update(null, 0);
   }
 
+  /**
+   * Shows or hides the side panel. This changes the canvas's size, and it does
+   * not redraw: a frame at the old size would be thrown away when the layout
+   * settles, and the host redraws once it has (see PanelGrid's `onResize`).
+   */
+  setCompact(on: boolean): void {
+    this.rootEl.classList.toggle('compact', on);
+  }
+
   protected get theme(): Theme {
     return this.opts.themes.current;
   }
 
+  /** Subclasses redraw their own theme-dependent overlays here. */
   protected onThemeChanged(_theme: Theme): void {}
 
   private applyTheme(theme: Theme): void {
     this.canvas.setTheme(theme);
+    // Swatches and the ramp follow the background-adjusted colours.
     this.updateLegend(true);
     if (this.pickedCell !== null) this.showCellCard(this.pickedCell);
     this.drawPickedRing();
@@ -209,20 +252,33 @@ export class ScatterView {
     this.repositionCards();
   }
 
+  /** Subclasses keep their own cards beside their anchors. */
   protected repositionCards(): void {}
 
+  /** Subclasses re-lay anything drawn per view when the inset changes. */
   protected onInsetChanged(): void {}
 
+  /** Keeps the picker showing whatever the canvas is actually coloured by. */
   private syncColorPicker(): void {
     const select = this.side.querySelector<HTMLSelectElement>('.colorby select');
     if (!select || !this.colorField) return;
     select.value = `${this.colorKind === 'categorical' ? 'c' : 'n'}:${this.colorField}`;
   }
 
+  /**
+   * Recounts the legend, at most a few times a second while loading.
+   *
+   * Counting is one linear pass over every loaded cell. Doing it per chunk
+   * costs 200 million increments across a forty-chunk ten-million-cell load,
+   * which is comparable to the load itself; the numbers do not need to be
+   * that fresh mid-load, and the final state is always exact.
+   */
   private updateLegend(force: boolean): void {
     const now = Date.now();
     if (!force && now - this.lastLegendUpdate < 200) return;
     this.lastLegendUpdate = now;
+    // Count each level as if it were shown, under every *other* field's filter:
+    // a hidden row then reports what toggling it back on would bring.
     const others =
       this.colorKind === 'categorical' && this.colorField
         ? computeVisibility(this.store, this.filter, this.legendBuffer ?? undefined, this.colorField)
@@ -236,7 +292,7 @@ export class ScatterView {
     wrap.className = 'colorby';
     const cats = this.store.categoricalFields().map(f => `<option value="c:${esc(f)}">${esc(f)}</option>`);
     const nums = this.store.numericFields().map(f => `<option value="n:${esc(f)}">${esc(f)}</option>`);
-    wrap.innerHTML = `<label>Color by <select>${cats.join('')}${nums.join('')}</select></label>`;
+    wrap.innerHTML = `<label>Colour by <select>${cats.join('')}${nums.join('')}</select></label>`;
     root.appendChild(wrap);
     wrap.querySelector('select')!.addEventListener('change', ev => {
       const value = (ev.target as HTMLSelectElement).value;
@@ -248,9 +304,11 @@ export class ScatterView {
   protected setColorBy(field: string, kind: ColorKind): void {
     this.colorKind = kind;
     this.colorField = field;
+    // A user-driven colour change repaints every loaded cell, not just a tail.
     this.canvas.setColorBy(field, kind, undefined, 0);
     this.updateLegend(true);
     this.syncColorPicker();
+    // The chat context names the colour-by field.
     this.refreshSelectionConsumers();
     if (this.pickedCell !== null) this.showCellCard(this.pickedCell);
   }
@@ -258,7 +316,10 @@ export class ScatterView {
   private onFilterChanged(): void {
     this.visible = computeVisibility(this.store, this.filter, this.visibleBuffer ?? undefined);
     if (this.visible) this.visibleBuffer = this.visible;
-    // Re-derive the effective selection from the raw one so un-hiding a category restores its cells.
+    // Re-derive the effective selection from the raw one, so un-hiding a
+    // category brings its selected cells back. If the effective selection
+    // changes, re-publishing it repaints the colours; otherwise the visibility
+    // change repaints them itself. Either way it is one pass, not two.
     const effective = this.raw ? filterIndices(this.raw.indices, this.visible) : null;
     const selectionChanges = effective !== null && effective !== this.selectionStore.current?.indices;
     this.canvas.setVisibility(this.visible, !selectionChanges);
@@ -266,12 +327,15 @@ export class ScatterView {
     if (this.pickedCell !== null && this.visible && !this.visible[this.pickedCell]) this.clearPicked();
     if (selectionChanges) this.publishSelection();
     else {
+      // Counts and the chat context depend on visibility even when the
+      // selected cells did not change.
       this.refreshSelectionConsumers();
       this.anatomy?.refresh();
       this.insetAnatomy?.refresh();
     }
   }
 
+  /** Sends the current selection's summary to the panel, the chat and any listener. */
   private refreshSelectionConsumers(): void {
     const sel = this.selectionStore.current;
     const ctx = sel
@@ -279,6 +343,8 @@ export class ScatterView {
           datasetId: this.store.datasetId,
           view: this.opts.view ?? 'embedding',
           colorBy: this.colorField,
+          // The model must know what the user is looking at: a share of the
+          // visible cells, and which categories the legend hides.
           visibleN: countVisible(this.visible, this.store.loadedCount),
           hidden: hiddenLabels(this.filter, this.store.levels)
         })
@@ -289,6 +355,7 @@ export class ScatterView {
   }
 
   private setRawSelection(indices: Uint32Array, shape: SelectionShape): void {
+    // Any newer selection supersedes a lasso query still in flight.
     this.selectionSeq++;
     this.raw = indices.length ? { indices, shape } : null;
     this.publishSelection();
@@ -314,8 +381,11 @@ export class ScatterView {
   private async runQuery(shape: QueryShape): Promise<void> {
     const seq = ++this.selectionSeq;
     try {
+      // The worker only needs the coordinates it does not already have, and
+      // it only needs them at the moment a query is actually asked.
       await this.client.ensure(this.store.xy, this.store.loadedCount);
       const indices = await this.client.query(shape, this.store.loadedCount);
+      // A region click or Clear made while the worker was busy wins.
       if (seq !== this.selectionSeq) return;
       this.setRawSelection(indices, shape.kind === 'poly' ? 'poly' : 'rect');
     } catch (err) {
@@ -323,10 +393,15 @@ export class ScatterView {
     }
   }
 
+  /**
+   * A click on the plot (client item UI-1). Subclasses may claim it first —
+   * the trajectory view checks its graph nodes — and fall back to this.
+   */
   protected handleClick(x: number, y: number): void {
     void this.pickCell(x, y);
   }
 
+  /** World-space click radius: the drawn point plus a few pixels of slack. */
   protected clickRadiusWorld(extraPx = 3): number {
     const px = Math.max(5, this.canvas.pointRadius() + extraPx);
     return px / Math.pow(2, this.canvas.viewState.zoom);
@@ -338,11 +413,13 @@ export class ScatterView {
     if (!Number.isFinite(wx) || !Number.isFinite(wy)) return;
     try {
       await this.client.ensure(this.store.xy, this.store.loadedCount);
+      // Only drawn cells can be clicked: under level of detail that is the
+      // shuffled prefix, so the count is all the worker needs.
       const radius = this.clickRadiusWorld();
       let hit: number | null = null;
       for (let k = CLICK_CANDIDATES; ; k *= CLICK_WIDEN) {
         const candidates = await this.client.nearest({ x: wx, y: wy, radius, k }, this.canvas.drawnCount());
-        if (seq !== this.clickSeq) return;
+        if (seq !== this.clickSeq) return; // a newer click won
         const vis = this.visible;
         for (const i of candidates) {
           if (!vis || vis[i]) {
@@ -350,6 +427,7 @@ export class ScatterView {
             break;
           }
         }
+        // Fewer than k answers means every cell in reach was seen.
         if (hit !== null || candidates.length < k || k >= CLICK_CANDIDATES_MAX) break;
       }
       if (hit === null) {
@@ -363,6 +441,12 @@ export class ScatterView {
     }
   }
 
+  /**
+   * Asks the server who the clicked cell is in the user's own file: its name
+   * and source row. The card opens at once with everything the page holds
+   * and fills these in when they arrive, unless a newer click or a close has
+   * superseded this one.
+   */
   private async lookUpIdentity(i: number, seq: number): Promise<void> {
     this.identityAbort?.abort();
     const abort = new AbortController();
@@ -372,7 +456,7 @@ export class ScatterView {
     try {
       info = await fetchCellInfo(API, this.store.datasetId, i, this.store.version, abort.signal);
     } catch {
-      return;
+      return; // aborted by a newer click or a close
     }
     if (seq !== this.clickSeq || this.pickedCell !== i) return;
     this.identity = { cell: i, info, pending: false };
@@ -389,6 +473,8 @@ export class ScatterView {
     } else if (known?.info?.row != null) {
       rows.push(`<dt>source row</dt><dd>${known.info.row}</dd>`);
     } else {
+      // Tiles from before prep kept cell ids: the viewer's own index is all
+      // there is, and it is labelled as such rather than passed off as an id.
       rows.push(`<dt>viewer index</dt><dd>${i}</dd>`);
     }
     for (const [field, codes] of s.codes) {
@@ -405,6 +491,8 @@ export class ScatterView {
       rows.push(`<dt>${esc(field)}</dt><dd>${values[i].toFixed(3)}</dd>`);
     }
     rows.push(`<dt>position</dt><dd>${s.xy[i * 2].toFixed(2)}, ${s.xy[i * 2 + 1].toFixed(2)}</dd>`);
+    // The title is the cell's own name (a barcode, say) once the server has
+    // answered; `show` escapes it.
     const title = known?.info?.id || 'Cell';
     this.card?.show(title, `<dl>${rows.join('')}</dl>`, [s.xy[i * 2], s.xy[i * 2 + 1]]);
     this.drawPickedRing();
@@ -435,6 +523,7 @@ export class ScatterView {
   }
 
   protected clearPicked(): void {
+    // Invalidates a lookup still in flight, so it cannot reopen the card.
     this.clickSeq++;
     this.identityAbort?.abort();
     this.identityAbort = null;
@@ -444,11 +533,27 @@ export class ScatterView {
     this.canvas.setOverlay('picked', []);
   }
 
+  /**
+   * Replaces the selection with these cells, or clears it with null. For a
+   * host that links this view to another or to a figure: the selection still
+   * lives in `selectionStore`, and the legend filter still applies to it.
+   */
+  selectIndices(indices: Uint32Array | null): void {
+    if (indices && indices.length > 0) this.setRawSelection(indices, 'segment');
+    else this.clearSelection();
+  }
+
+  /** The cells selected before the legend filter, which is what a figure compares against. */
+  rawSelectionIndices(): Uint32Array | null {
+    return this.raw?.indices ?? null;
+  }
+
   zoomToSelection(): void {
     const sel = this.selectionStore.current;
     if (sel) this.canvas.fitBounds(sel.bbox);
   }
 
+  /** Called as chunks arrive so new cells get coloured and indexed. */
   onDataGrew(): void {
     if (this.filter.isActive()) {
       this.visible = computeVisibility(this.store, this.filter, this.visibleBuffer ?? undefined);
@@ -456,9 +561,12 @@ export class ScatterView {
     } else {
       this.canvas.refreshColors();
     }
-    // The worker is refreshed lazily before a query, not per chunk (80 MB at ten million cells).
+    // The selection worker is refreshed lazily, before the next query, rather
+    // than on every chunk: the copy is eighty megabytes at ten million cells.
     this.updateLegend(this.store.isComplete());
     this.lod.setDrawn(this.canvas.drawnCount(), this.store.loadedCount);
+    // Anatomy shading is a pass over every loaded cell; mid-load it can be a
+    // little stale, but it is always exact once the last chunk lands.
     const now = Date.now();
     if (this.store.isComplete() || now - this.lastAnatomyRefresh > 250) {
       this.lastAnatomyRefresh = now;

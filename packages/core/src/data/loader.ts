@@ -4,11 +4,15 @@ import { validateManifest, type Manifest, type PrincipalGraph } from './manifest
 export interface LoadOptions {
   onChunk?: (chunk: number, store: CellStore) => void;
   signal?: AbortSignal;
+  /** Concurrent chunk requests. Above ~6 the browser queues them anyway. */
   concurrency?: number;
+  /** Extra attempts per request after a network error or a 5xx response. */
   retries?: number;
+  /** Wait before the first retry; it doubles with each further attempt. */
   retryDelayMs?: number;
 }
 
+/** A response that arrived but was not OK. */
 class HttpStatusError extends Error {
   constructor(
     readonly status: number,
@@ -18,7 +22,11 @@ class HttpStatusError extends Error {
   }
 }
 
-/** A 4xx will not change on retry; only network errors and 5xx are worth another try. */
+/**
+ * A 4xx means the request itself is wrong — a chunk that does not exist, a
+ * field the server never wrote — and asking again gets the same answer. Only
+ * network errors and 5xx responses are worth another try.
+ */
 function isPermanent(err: unknown): boolean {
   return err instanceof HttpStatusError && err.status >= 400 && err.status < 500;
 }
@@ -66,7 +74,23 @@ export async function fetchGraph(
   return (await res.json()) as PrincipalGraph;
 }
 
-/** Loads every chunk into preallocated typed arrays; a failed chunk is retried once at the end. */
+/**
+ * Loads every column chunk into one preallocated set of typed arrays.
+ *
+ * Chunks are written straight into their final global offset, so a chunk
+ * that arrives late never forces earlier data to be copied or re-uploaded.
+ *
+ * A chunk whose requests fail after their retries is tried once more after
+ * every other chunk has been, so a brief outage in the middle of a long load
+ * does not cost a chunk for good. If it fails again it is recorded in
+ * `failedChunks`. Everything before it still renders, but the chunks after
+ * it do not: they are written, yet `loadedCount` cannot advance past the gap
+ * (see `CellStore.loadedCount`). A partial plot beats a blank one.
+ *
+ * When the manifest carries a `version`, it is appended to every chunk URL,
+ * so re-preparing a dataset under the same id can never mix freshly written
+ * chunks with stale ones from the browser's cache.
+ */
 export async function loadDataset(
   baseUrl: string,
   id: string,
@@ -81,6 +105,7 @@ export async function loadDataset(
       ? `?v=${encodeURIComponent(manifest.version)}`
       : '';
 
+  /** Loads one chunk; resolves to the error that stopped it, or null. */
   const loadChunk = async (c: number, tries: number): Promise<unknown> => {
     const { start, count } = store.chunkRange(c);
     if (count <= 0) return null;
@@ -117,6 +142,8 @@ export async function loadDataset(
     return null;
   };
 
+  // Fixed-size worker pool over `chunks`, taken in order so the plot fills
+  // from the front.
   const runPool = async (
     chunks: number[],
     tries: number,
@@ -140,6 +167,7 @@ export async function loadDataset(
     (c, err) => (isPermanent(err) ? store.failedChunks : retryLater).push(c)
   );
   if (retryLater.length > 0) {
+    // One more attempt each, after a pause longer than any in-pool backoff.
     await sleep(retryDelayMs * 2 ** retries);
     retryLater.sort((a, b) => a - b);
     await runPool(retryLater, 0, c => store.failedChunks.push(c));

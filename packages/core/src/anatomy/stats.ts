@@ -1,5 +1,16 @@
-/** Per-segment cell counts and segment-to-cell selection, as flat passes over the code column. */
+/**
+ * Per-segment cell counts and segment-to-cell selection.
+ *
+ * Both run over the code column directly, so a whole-body shading at ten
+ * million cells is one flat pass with a level lookup per cell. Levels are
+ * mapped to segments once, up front; the per-cell loop never touches strings.
+ */
 
+/**
+ * Cells allowed by a second categorical field, typically the organ scope from
+ * `organScope`: a cell counts only if `levels[codes[i]]` is 1. A code outside
+ * `levels` counts as not flagged.
+ */
 export interface WithinField {
   codes: Uint16Array;
   levels: Uint8Array;
@@ -8,11 +19,19 @@ export interface WithinField {
 export interface SegmentScope {
   /** Only `[0, upTo)` is real data. */
   upTo: number;
+  /** Restrict to these cells (a selection). Null means every cell. */
   indices?: Uint32Array | null;
+  /** Per-cell visibility from the legend filter. Null means all visible. */
   visible?: Uint8Array | null;
+  /**
+   * Restrict to the cells of one organ, so a region label shared between
+   * organs (`medulla`) only counts the cells of the organ on screen.
+   * Null means every cell.
+   */
   within?: WithinField | null;
 }
 
+/** Counts cells per segment within the scope. Unmatched levels are skipped. */
 export function segmentCounts(
   codes: Uint16Array,
   levelToSegment: Int32Array,
@@ -47,6 +66,12 @@ export function segmentCounts(
   return counts;
 }
 
+/**
+ * Indices of every visible cell whose level maps to one of `segments`, in
+ * ascending order — the same shape a lasso query returns, so the result can go
+ * straight into the selection store. `within` restricts to one organ's cells,
+ * as in `SegmentScope`.
+ */
 export function cellsInSegments(
   codes: Uint16Array,
   levelToSegment: Int32Array,

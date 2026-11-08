@@ -5,7 +5,13 @@ import { applyTheme, themeFromLocation } from '../theme';
 import { renderOrgan } from './figure';
 import { esc } from '../ui/escape';
 
-/** Organ gallery: every registered model, each segment in its own color, for illustrators. */
+/**
+ * Organ gallery: every registered model, each segment in its own colour.
+ *
+ * This is the page an illustrator iterates against and the page the visual
+ * check photographs. Distinct colours make gaps, overlaps and mislabelled
+ * segments obvious in a way the data heatmap would hide.
+ */
 function main(): void {
   const theme = themeFromLocation();
   applyTheme(theme);

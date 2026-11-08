@@ -4,6 +4,7 @@ export interface Selection {
   indices: Uint32Array;
   mask: Uint8Array;
   bbox: [number, number, number, number];
+  /** How it was made: a lasso, a box, or an anatomy region click. */
   shape: SelectionShape;
 }
 
@@ -11,7 +12,10 @@ export type SelectionShape = 'poly' | 'rect' | 'segment';
 
 export type SelectionListener = (sel: Selection | null) => void;
 
-/** The single owner of selection state; other modules subscribe instead of reaching in. */
+/**
+ * The single place selection state lives. The canvas, the summary panel and
+ * the chat panel all read from here and none of them reach into each other.
+ */
 export class SelectionStore {
   private listeners = new Set<SelectionListener>();
   current: Selection | null = null;
@@ -61,7 +65,8 @@ export class SelectionStore {
   }
 
   private emit(): void {
-    // A throwing listener must not silence the ones after it.
+    // A listener that throws must not silence the ones after it; a broken
+    // chat panel should not also break the legend.
     for (const fn of this.listeners) {
       try {
         fn(this.current);

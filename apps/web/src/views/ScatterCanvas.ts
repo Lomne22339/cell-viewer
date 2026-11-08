@@ -16,12 +16,22 @@ import type { ScreenRect } from '@core/inset/geometry';
 
 export type ColorKind = 'categorical' | 'numeric';
 
-/** Points drawn at once before level of detail subsamples; 1M pans smoothly on an Apple M4. */
+/**
+ * Points drawn at once before level of detail starts subsampling.
+ *
+ * Measured, not guessed. On an Apple M4 through ANGLE/Metal, with blending off,
+ * the sweep in docs/benchmarks/2026-09-07-capacity.md records 60 fps at 500k,
+ * a steady 30 fps at 1M and 18 fps at 2M. One million is the largest round
+ * number that still pans smoothly, and it is what lets a published-scale UMAP
+ * be shown whole. A weaker GPU should lower it; the detail slider is the
+ * manual override either way.
+ */
 export const DEFAULT_POINT_BUDGET = 1_000_000;
 
 const MAIN_VIEW = 'ortho';
 const INSET_VIEW = 'inset';
 
+/** Overlay slots, bottom to top. Anything not listed draws above these. */
 const OVERLAY_ORDER = ['graph', 'graph-highlight', 'picked', 'selection-preview'];
 
 export interface OrthoViewState {
@@ -34,9 +44,16 @@ export interface OrthoViewState {
 }
 
 export interface InsetSpec {
+  /** Where the inset sits, in canvas CSS pixels. */
   rect: ScreenRect;
   target: [number, number];
   zoom: number;
+  /**
+   * How many of the drawn chunks the inset also draws. An overview needs only
+   * the first (pre-shuffled, so an unbiased sample); a magnified region needs
+   * the same density as the main view or it looks sparser than what it zooms
+   * into. Defaults to 1.
+   */
   chunks?: number;
 }
 
@@ -47,21 +64,45 @@ interface BinaryAttribute {
 }
 
 export interface ScatterCanvasOptions {
+  /** Target points on screen before subsampling kicks in. */
   budget?: number;
-  /** Translucent points. Off by default: blending a million points is the costliest setting. */
+  /**
+   * Draw points translucently. Off by default: alpha blending a million
+   * overlapping points costs roughly four times the frame rate on a
+   * tile-based GPU, and the selection highlight does not need it.
+   */
   blend?: boolean;
+  /** Background, dimming and default point colour. Defaults to the black theme. */
   theme?: Theme;
   onViewStateChange?: (vs: OrthoViewState) => void;
+  /** Fires when the inset view opens, closes, moves or changes zoom. */
   onInsetChange?: () => void;
+  /** Fires after each frame deck.gl actually draws. Used by the benchmark. */
+  onAfterRender?: () => void;
 }
 
-/** Drops `zoomX`/`zoomY`: once scrolled they override `zoom`, so a zoom-only move would not apply. */
+/**
+ * A view state with deck.gl's per-axis zoom removed.
+ *
+ * Once the user has scrolled, deck.gl 9's orthographic view state carries
+ * `zoomX`/`zoomY` alongside `zoom`, and the per-axis values win. A camera move
+ * that only sets `zoom` — reset view, zoom to selection — would then pan but
+ * silently keep the old magnification. Dropping them lets deck.gl derive both
+ * from `zoom` again.
+ */
 function withoutAxisZoom(vs: OrthoViewState): OrthoViewState {
   const { zoomX: _x, zoomY: _y, ...rest } = vs as OrthoViewState & { zoomX?: number; zoomY?: number };
   return rest;
 }
 
-/** Point layer; filtered-out cells are culled in the vertex shader (alpha 0 alone still overwrites). */
+/**
+ * The point layer, with filtered-out cells culled in the vertex shader.
+ *
+ * A legend filter hides a cell by giving it alpha 0. With blending off, an
+ * alpha-0 fragment would still overwrite whatever is behind it, so the vertex
+ * stage moves such a point outside the clip volume instead: it produces no
+ * fragments at all, costs nothing to rasterise, and needs no second buffer.
+ */
 class CellLayer extends ScatterplotLayer {
   static layerName = 'CellLayer';
 
@@ -79,8 +120,23 @@ class CellLayer extends ScatterplotLayer {
 }
 
 /**
- * The shared point-cloud canvas: binary attributes (no per-point accessors), one layer per chunk,
- * not pickable (clicks use the selection worker's grid index), all colors through one `repaint`.
+ * The shared point-cloud canvas. Both the embedding view and the trajectory
+ * view are this class plus their own overlay layers.
+ *
+ * Decisions that carry the performance here:
+ *
+ *  1. Layers are fed binary attributes, not a `data` array. deck.gl then
+ *     uploads the typed arrays straight to the GPU and never calls an
+ *     accessor per point.
+ *  2. There is one layer per loaded chunk. A chunk uploads once, when it
+ *     arrives; later chunks do not disturb it.
+ *  3. Point layers are not pickable. A hover picking pass costs a full extra
+ *     render of every point under the cursor's neighbourhood on every pointer
+ *     move, and per-cell hover was exactly what the client asked to remove.
+ *     Clicks are answered by the selection worker's grid index instead.
+ *  4. Every colour decision — colour-by, selection dimming, legend filter,
+ *     theme background — goes through one `repaint`, so `store.color` has a
+ *     single writer.
  */
 export class ScatterCanvas {
   private deck: Deck<OrthographicView[]>;
@@ -91,10 +147,18 @@ export class ScatterCanvas {
   private manualLod: number | null = null;
   private budget: number;
   private ramp = 'viridis';
+  private radiusOverride: number | null = null;
   private colorVersion = 0;
   private cachedPointLayers: Layer[] = [];
+  /**
+   * Binary attribute objects per chunk, reused across layer rebuilds. deck.gl
+   * skips a GPU upload when it is handed the identical attribute object, so a
+   * zoom (which changes the radius and rebuilds the layers) re-uploads nothing,
+   * and a colour change re-uploads colours but never positions.
+   */
   private chunkAttributes = new Map<number, { start: number; count: number; colorVersion: number; position: BinaryAttribute; color: BinaryAttribute }>();
   private pointLayerKey = '';
+  private rebuildCount = 0;
   private controllerOn = true;
   private currentMask: Uint8Array | null = null;
   private visible: Uint8Array | null = null;
@@ -131,26 +195,45 @@ export class ScatterCanvas {
     container.appendChild(canvas);
     this.canvasEl = canvas;
 
-    // Controlled, not `initialViewState`: re-applying that resets the view manager on every pan.
+    // Controlled view state, not `initialViewState`.
+    //
+    // `initialViewState` is read once and re-applying it resets deck.gl's view
+    // manager, so driving a pan through it costs a full reset per frame. In
+    // controlled mode the view state is just another prop and a pan is a
+    // uniform update.
+    // deck.gl's callbacks reach this object through `live`, not through `this`:
+    // the graphics library keeps its canvas, animation loop and props after
+    // `finalize`, so anything they capture stays alive. `destroy` empties
+    // `live`, and then all they hold is this small box.
+    const live = this.live;
     this.deck = new Deck({
       canvas,
       views: this.views(),
       viewState: this.viewStates() as never,
-      // No Deck-level `controller`: deck.gl writes it into the caller's `views` array, where it sticks.
-      // The main view carries its own controller.
+      // No Deck-level `controller`: deck.gl applies it by writing a clone into
+      // index 0 of the caller's `views` array, which then sticks — so turning
+      // it off for a lasso drag would silently leave panning on. The main
+      // view carries its own controller instead (see `views()`).
+      // Points are flat and unordered; depth testing costs fill rate and
+      // buys nothing here.
       parameters: { depthCompare: 'always' },
-      layerFilter: ({ layer, viewport }) => this.layerInView(layer.id, viewport.id),
+      layerFilter: ({ layer, viewport }) => live.self?.layerInView(layer.id, viewport.id) ?? false,
       onViewStateChange: ({ viewState, viewId }: { viewState: unknown; viewId: string }) => {
-        if (viewId !== MAIN_VIEW) return this.viewStates()[viewId] as never;
-        this.viewState = viewState as OrthoViewState;
-        // Render first: setProps rebuilds deck.gl's viewports, which the listener projects through.
-        this.render();
-        this.opts.onViewStateChange?.(this.viewState);
+        const self = live.self;
+        if (!self) return viewState as never;
+        if (viewId !== MAIN_VIEW) return self.viewStates()[viewId] as never;
+        self.viewState = viewState as OrthoViewState;
+        // Render first: deck.gl rebuilds its viewports in setProps, and the
+        // listener projects DOM anchors (cards, the inset marker) through them.
+        self.render();
+        self.opts.onViewStateChange?.(self.viewState);
         return viewState as never;
       },
-      // deck.gl rewrites the canvas cursor every frame, so the crosshair must be set here.
+      onAfterRender: () => live.self?.opts.onAfterRender?.(),
+      // deck.gl rewrites the canvas cursor every frame, so the box and lasso
+      // crosshair has to come from here, not from the element's style.
       getCursor: ({ isDragging }: { isDragging: boolean }) =>
-        !this.controllerOn ? 'crosshair' : isDragging ? 'grabbing' : 'grab',
+        live.self && !live.self.controllerOn ? 'crosshair' : isDragging ? 'grabbing' : 'grab',
       layers: []
     });
     this.render();
@@ -206,6 +289,12 @@ export class ScatterCanvas {
     };
   }
 
+  /**
+   * The inset draws only the first chunk — because points are stored
+   * pre-shuffled that is an unbiased sample — plus the trajectory backbone and
+   * its own `inset:` layers. It reuses the main view's GPU buffers; it is a
+   * second viewport, not a second context.
+   */
   private layerInView(id: string, viewId: string): boolean {
     if (viewId === INSET_VIEW) {
       if (id.startsWith('cells-')) return Number(id.slice(6)) < (this.inset?.chunks ?? 1);
@@ -224,16 +313,37 @@ export class ScatterCanvas {
     });
   }
 
+  /** Number of points currently being drawn — reported in the UI and bench. */
   drawnCount(): number {
     const f = this.lod().renderFraction;
     return Math.min(this.store.loadedCount, Math.ceil(f * this.store.loadedCount));
   }
 
+  /** On-screen point radius in CSS pixels. */
   pointRadius(): number {
-    return this.lod().radius;
+    return this.radiusOverride ?? this.lod().radius;
   }
 
-  /** Point layers, rebuilt only when their inputs change (a lasso drag re-renders per pointermove). */
+  /**
+   * Pins point radius, so the benchmark can hold point count fixed and vary
+   * only overdraw. That is what separates a fill-rate limit from a vertex
+   * throughput limit.
+   */
+  setPointRadiusOverride(radius: number | null): void {
+    this.radiusOverride = radius;
+    this.render();
+  }
+
+  /**
+   * Point layers, rebuilt only when something that affects them changes.
+   *
+   * Dragging a lasso fires a pointermove per event, and each one re-renders
+   * the deck. Without this cache every one of those moves reconstructed
+   * every chunk layer — four layer objects at one million cells, forty at
+   * ten million — which is enough to wedge the main thread mid-drag. The
+   * key covers everything the layers depend on; deck.gl treats an unchanged
+   * layer instance as a no-op.
+   */
   private buildPointLayers(): Layer[] {
     const radius = this.pointRadius();
     const drawn = this.drawnCount();
@@ -252,7 +362,8 @@ export class ScatterCanvas {
           data: {
             length: count,
             attributes: { getPosition: attrs.position, getFillColor: attrs.color }
-            // deck.gl's binary-attribute typing omits `normalized`, which the unorm8 colors need.
+            // deck.gl's binary-attribute typing omits `normalized`, which the
+            // runtime honours and the unorm8 colour buffer relies on.
           } as never,
           radiusUnits: 'pixels',
           getRadius: radius,
@@ -267,6 +378,7 @@ export class ScatterCanvas {
       );
     }
     this.pointLayerKey = key;
+    this.rebuildCount++;
     this.cachedPointLayers = layers;
     return layers;
   }
@@ -284,6 +396,8 @@ export class ScatterCanvas {
       this.chunkAttributes.set(c, entry);
     }
     if (entry.colorVersion !== this.colorVersion) {
+      // A fresh object over the same memory: deck.gl sees a new value and
+      // re-uploads the colours, and only the colours.
       entry.color = { value: this.store.color.subarray(start * 4, (start + count) * 4), size: 4, normalized: true };
       entry.colorVersion = this.colorVersion;
     }
@@ -299,7 +413,9 @@ export class ScatterCanvas {
   }
 
   render(): void {
-    // A transition is one-shot; left on `viewState` it would restart on every later render.
+    // A transition is a one-shot instruction, not part of the view state. If it
+    // stayed on `viewState` then every later render — a selection repaint, a
+    // detail-slider move — would re-issue it and restart the animation.
     const viewState = this.viewStates();
     this.pendingTransition = null;
     this.deck.setProps({
@@ -308,6 +424,7 @@ export class ScatterCanvas {
     });
   }
 
+  /** The DOM element pointer events are bound to. */
   element(): HTMLCanvasElement {
     return this.canvasEl;
   }
@@ -316,6 +433,7 @@ export class ScatterCanvas {
     return this.store.bounds;
   }
 
+  /** Canvas size in CSS pixels. */
   size(): { width: number; height: number } {
     return {
       width: this.container.clientWidth || this.canvasEl.clientWidth || 800,
@@ -323,7 +441,20 @@ export class ScatterCanvas {
     };
   }
 
+  /** deck.gl's own frame breakdown, for diagnosing where time actually goes. */
+  metrics(): Record<string, number> {
+    return { ...((this.deck as unknown as { metrics: Record<string, number> }).metrics ?? {}) };
+  }
+
+  /** How many times the chunk layers have actually been reconstructed. */
+  layerRebuilds(): number {
+    return this.rebuildCount;
+  }
+
+  /** Selection highlight and filter, expressed the way the current blend mode needs. */
   private dimOptions(): DimOptions {
+    // In translucent mode the highlight is applied afterwards via alpha, so the
+    // colour pass leaves the hue alone.
     return {
       mask: this.blend ? null : this.currentMask,
       factor: this.blend ? 1 : this.dimFactor,
@@ -332,9 +463,12 @@ export class ScatterCanvas {
     };
   }
 
+  /** The single writer of `store.color`. */
   private repaintColors(from: number): void {
     const dim = this.dimOptions();
     if (!this.colorField) {
+      // A dataset can carry coordinates and nothing else; draw it in the
+      // theme's default point colour, which is tested to read on its background.
       recolorConstant(this.store, this.pointDefault, 255, from, dim);
     } else if (this.colorKind === 'categorical') {
       recolorCategorical(this.store, this.colorField, 255, from, dim);
@@ -364,6 +498,13 @@ export class ScatterCanvas {
     return this.blend;
   }
 
+  /**
+   * Turns translucent rendering on or off.
+   *
+   * Translucency shows density in crowded regions but costs about four times
+   * the frame rate at a million points, so it is worth having and worth
+   * leaving off by default.
+   */
   setBlending(on: boolean): void {
     if (this.blend === on) return;
     this.blend = on;
@@ -371,12 +512,24 @@ export class ScatterCanvas {
     this.setColorBy(this.colorField, this.colorKind, this.ramp, 0);
   }
 
+  /**
+   * Colours cells that arrived since the last pass.
+   *
+   * Called once per chunk, so it must touch only the new tail; recolouring
+   * everything loaded so far on every chunk is quadratic in the chunk count.
+   */
   refreshColors(): void {
     if (this.store.loadedCount <= this.coloredUpTo) return;
     this.repaintColors(this.coloredUpTo);
     this.render();
   }
 
+  /**
+   * Repaints the highlight for a new selection.
+   *
+   * In opaque mode this re-derives every colour from the source column so the
+   * dimming never compounds; in translucent mode it only rewrites alpha.
+   */
   applyMask(mask: Uint8Array | null): void {
     this.currentMask = mask;
     if (this.blend) {
@@ -388,11 +541,17 @@ export class ScatterCanvas {
     this.setColorBy(this.colorField, this.colorKind, this.ramp, 0);
   }
 
+  /**
+   * Legend filter: 0 hides a cell. Null shows every cell. Pass
+   * `repaint = false` when a selection change is about to repaint anyway, so
+   * one filter click costs one pass over the colour buffer, not two.
+   */
   setVisibility(visible: Uint8Array | null, repaint = true): void {
     this.visible = visible;
     if (repaint) this.setColorBy(this.colorField, this.colorKind, this.ramp, 0);
   }
 
+  /** Theme change: new background for the canvas, the dimming and the inset. */
   setTheme(theme: Theme): void {
     this.background = theme.background;
     this.dimFactor = theme.dimFactor;
@@ -406,6 +565,7 @@ export class ScatterCanvas {
     this.render();
   }
 
+  /** Replaces one named overlay. Slots stack in a fixed order (see OVERLAY_ORDER). */
   setOverlay(slot: string, layers: Layer[]): void {
     if (layers.length === 0) this.overlays.delete(slot);
     else this.overlays.set(slot, layers);
@@ -420,6 +580,7 @@ export class ScatterCanvas {
     this.setOverlay('selection-preview', layers);
   }
 
+  /** Shows, moves or (with null) removes the foreground inset view. */
   setInset(spec: InsetSpec | null): void {
     this.inset = spec;
     this.deck.setProps({ views: this.views() });
@@ -427,10 +588,12 @@ export class ScatterCanvas {
     this.opts.onInsetChange?.();
   }
 
+  /** The inset camera's zoom, or null while no zoom or overview inset is drawn. */
   insetZoom(): number | null {
     return this.inset ? this.inset.zoom : null;
   }
 
+  /** Disables deck.gl's pan/zoom controller while a lasso is being drawn. */
   setInteractive(on: boolean): void {
     if (this.controllerOn === on) return;
     this.controllerOn = on;
@@ -457,6 +620,12 @@ export class ScatterCanvas {
     this.opts.onViewStateChange?.(this.viewState);
   }
 
+  /**
+   * Animates the view to a target over `ms`, letting deck.gl drive the frames.
+   *
+   * The benchmark uses this rather than moving the camera itself each tick, so
+   * the frame rate it records is the renderer's, not the caller's.
+   */
   panTo(target: [number, number], ms: number): void {
     this.viewState = { ...withoutAxisZoom(this.viewState), target: [target[0], target[1], 0] };
     this.pendingTransition = ms > 0 ? { duration: ms, interpolator: new LinearInterpolator(['target']) } : null;
@@ -465,7 +634,8 @@ export class ScatterCanvas {
   }
 
   private viewport(id = MAIN_VIEW): { project: (p: number[]) => number[]; unproject: (p: number[]) => number[] } | undefined {
-    // deck.gl asserts if asked for viewports before its device initializes (an early click can).
+    // deck.gl asserts if asked for viewports before its device has
+    // initialised, which a click in the first frames after load can do.
     try {
       return this.deck.getViewports().find(v => v.id === id) as never;
     } catch {
@@ -473,6 +643,7 @@ export class ScatterCanvas {
     }
   }
 
+  /** Pixel coordinates to world coordinates, for lasso capture and clicks. */
   screenToWorld(px: number, py: number): [number, number] {
     const vp = this.viewport();
     // NaN, not the origin: callers must not act on a point that does not exist yet.
@@ -481,6 +652,7 @@ export class ScatterCanvas {
     return [x, y];
   }
 
+  /** World coordinates to canvas pixels, for anchoring DOM to data. */
   worldToScreen(x: number, y: number): [number, number] {
     const vp = this.viewport();
     if (!vp) return [NaN, NaN];
@@ -488,6 +660,7 @@ export class ScatterCanvas {
     return [px, py];
   }
 
+  /** World to pixels inside the inset (relative to the inset's top-left). */
   insetWorldToScreen(x: number, y: number): [number, number] | null {
     const vp = this.viewport(INSET_VIEW);
     if (!vp || !this.inset) return null;
@@ -495,6 +668,7 @@ export class ScatterCanvas {
     return [px, py];
   }
 
+  /** Pixels inside the inset to world coordinates. */
   insetScreenToWorld(px: number, py: number): [number, number] | null {
     const vp = this.viewport(INSET_VIEW);
     if (!vp || !this.inset) return null;
@@ -502,20 +676,56 @@ export class ScatterCanvas {
     return [x, y];
   }
 
-  /** A lost WebGL context blanks the canvas; our typed arrays rebuild every buffer, so re-render. */
+  /**
+   * A lost WebGL context blanks the canvas. Every buffer can be rebuilt from
+   * the typed arrays we still hold, so the recovery is simply to re-render
+   * rather than to reload the dataset.
+   */
+  /** The only handle deck.gl's callbacks hold; emptied by `destroy`. */
+  private live: { self: ScatterCanvas | null } = { self: this };
+
+  private onContextLost = (ev: Event): void => {
+    ev.preventDefault();
+    console.warn('WebGL context lost; will restore from the CPU-side arrays');
+  };
+
+  private onContextRestored = (): void => {
+    this.colorVersion++;
+    this.render();
+  };
+
   private installContextLossRecovery(canvas: HTMLCanvasElement): void {
-    canvas.addEventListener('webglcontextlost', ev => {
-      ev.preventDefault();
-      console.warn('WebGL context lost; will restore from the CPU-side arrays');
-    });
-    canvas.addEventListener('webglcontextrestored', () => {
-      this.colorVersion++;
-      this.render();
-    });
+    canvas.addEventListener('webglcontextlost', this.onContextLost);
+    canvas.addEventListener('webglcontextrestored', this.onContextRestored);
   }
 
   destroy(): void {
+    // Release what deck.gl would otherwise keep: its layers (which hold the
+    // cell arrays) and, below, the way back to this object.
+    this.deck.setProps({ layers: [] });
+    this.chunkAttributes.clear();
+    this.cachedPointLayers = [];
+    this.overlays.clear();
     this.deck.finalize();
+    this.live.self = null;
+    // deck.gl also remembers the last pointer event it saw, and an event's
+    // path lists the page elements it crossed, with their click handlers. That
+    // would keep this view's toolbar, and through it the view, alive. These are
+    // deck.gl internals, so the assignments are harmless if they ever change.
+    const internals = this.deck as unknown as {
+      _pickRequest?: { event?: unknown };
+      _lastPointerDownInfo?: unknown;
+      _lastPointerDownInfoPromise?: unknown;
+    };
+    if (internals._pickRequest) internals._pickRequest.event = null;
+    internals._lastPointerDownInfo = null;
+    internals._lastPointerDownInfoPromise = null;
+    // The graphics library keeps hold of the canvas after `finalize` (a
+    // device-pixel-ratio media-query listener still points at it), so the
+    // canvas can outlive this object. These listeners must not point back at
+    // it, or the whole view and every cell array would be kept alive with it.
+    this.canvasEl.removeEventListener('webglcontextlost', this.onContextLost);
+    this.canvasEl.removeEventListener('webglcontextrestored', this.onContextRestored);
     this.canvasEl.remove();
   }
 }

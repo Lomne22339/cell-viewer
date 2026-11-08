@@ -3,21 +3,31 @@ import type { Layer } from '@deck.gl/core';
 import type { PrincipalGraph } from '@core/data/manifest';
 import { graphNodeMarkers, graphPaths, type GraphMarker } from '@core/graph/paths';
 import type { LabelPlacement } from '@core/graph/labels';
-import type { Neighbor, NeighborMetric } from '@core/graph/neighbors';
+import type { Neighbour, NeighbourMetric } from '@core/graph/neighbours';
 import { GRAPH_ALPHA, GRAPH_MUTED, type Rgb, type Theme } from '@core/theme/themes';
 
 type Rgba = [number, number, number, number];
-type RankLabel = { nb: Neighbor; offset: [number, number] };
+type RankLabel = { nb: Neighbour; offset: [number, number] };
 const rgba = (c: Rgb, a = 255): Rgba => [c[0], c[1], c[2], a];
 
 export interface GraphLayerOptions {
   theme: Theme;
   showLabels?: boolean;
   lineWidth?: number;
+  /** Fade the backbone while a node's neighbourhood is highlighted. */
   muted?: boolean;
 }
 
-/** Trajectory backbone over the cells: halo underneath, every node drawn because all are clickable. */
+/**
+ * The trajectory backbone drawn over the cells.
+ *
+ * The graph is small — hundreds of nodes against hundreds of thousands of
+ * cells — so it is drawn plainly, with a halo underneath so it stays legible
+ * over a dense point cloud. Every node is drawn, not only the root, branch
+ * points and leaves, because every node can be clicked (client item UI-4).
+ * All colours come from the theme, so the overlay reads on black, white,
+ * grey and light yellow alike.
+ */
 export function buildGraphLayers(graph: PrincipalGraph, opts: GraphLayerOptions): Layer[] {
   const { theme } = opts;
   const paths = graphPaths(graph);
@@ -111,16 +121,23 @@ export function buildGraphLayers(graph: PrincipalGraph, opts: GraphLayerOptions)
 
 export interface GraphHighlight {
   source: number;
-  neighbors: Neighbor[];
+  neighbours: Neighbour[];
+  /** Shortest-path edges joining the source to its neighbours (graph metric). */
   edges: [number, number][];
-  metric: NeighborMetric;
+  metric: NeighbourMetric;
 }
 
+/** Rank numbers: 11 px bold monospace on a padded background chip. */
 const RANK_FONT_PX = 11;
 const RANK_CHAR_PX = 0.6 * RANK_FONT_PX;
 const RANK_PAD: [number, number] = [3, 1];
+/** Clearance between a neighbour's centre and the nearest edge of its rank chip. */
 export const RANK_LABEL_GAP = 4.5;
 
+/**
+ * On-screen size of a rank chip, with a pixel of margin on every side so two
+ * chips never sit flush against each other.
+ */
 export function rankLabelSize(rank: number): [number, number] {
   return [
     String(rank).length * RANK_CHAR_PX + 2 * RANK_PAD[0] + 2,
@@ -128,21 +145,30 @@ export function rankLabelSize(rank: number): [number, number] {
   ];
 }
 
-export function neighborRadiusPx(rank: number, k: number): number {
+/** Drawn radius of the rank-`rank` neighbour of `k`: closer ones are larger. */
+export function neighbourRadiusPx(rank: number, k: number): number {
   return 8 - (4 * (rank - 1)) / Math.max(1, k);
 }
-const NEIGHBOR_STROKE_PX = 1.5;
+const NEIGHBOUR_STROKE_PX = 1.5;
 const SOURCE_RADIUS_PX = 11;
 const SOURCE_STROKE_PX = 2.5;
+/** Outer radius of the clicked node's ring, stroke included, for label avoidance. */
 export const SOURCE_RING_PX = SOURCE_RADIUS_PX + SOURCE_STROKE_PX / 2;
-export const neighborOuterPx = (rank: number, k: number): number =>
-  neighborRadiusPx(rank, k) + NEIGHBOR_STROKE_PX / 2;
+/** Outer radius of a neighbour's disc, stroke included, for label avoidance. */
+export const neighbourOuterPx = (rank: number, k: number): number =>
+  neighbourRadiusPx(rank, k) + NEIGHBOUR_STROKE_PX / 2;
 
+/** Rank layout for the main view and, while a zoom or overview inset is open, the inset. */
 export interface RankLabels {
   main?: readonly LabelPlacement[];
   inset?: readonly LabelPlacement[] | null;
 }
 
+/**
+ * The rank numbers for one view. `labels`, parallel to `hl.neighbours`, says
+ * which numbers fit at that view's zoom and on which side; without it every
+ * number is drawn up and to the right.
+ */
 function rankLayer(
   id: string,
   graph: PrincipalGraph,
@@ -150,7 +176,7 @@ function rankLayer(
   theme: Theme,
   labels?: readonly LabelPlacement[]
 ): TextLayer<RankLabel> {
-  const ranks = hl.neighbors.flatMap((nb, i): RankLabel[] => {
+  const ranks = hl.neighbours.flatMap((nb, i): RankLabel[] => {
     const at = labels?.[i];
     if (at && !at.visible) return [];
     const [w, h] = rankLabelSize(nb.rank);
@@ -173,7 +199,15 @@ function rankLayer(
   });
 }
 
-/** Clicked node and neighbors; rank layers are per view: `hl-ranks` (main), `inset:hl-ranks`. */
+/**
+ * The clicked node and its closest nodes: the joining stretch of trajectory
+ * (or straight connectors, for the embedding metric), neighbours sized and
+ * numbered by rank, and a ring on the clicked node.
+ *
+ * The rank numbers are laid out per view, because a number that has no room
+ * in the main view may well have room in the magnified inset: `hl-ranks` is
+ * drawn in the main view only and `inset:hl-ranks` in the inset only.
+ */
 export function buildGraphHighlightLayers(
   graph: PrincipalGraph,
   hl: GraphHighlight,
@@ -182,11 +216,11 @@ export function buildGraphHighlightLayers(
 ): Layer[] {
   const src = graph.nodes[hl.source];
   if (!src) return [];
-  const k = Math.max(1, hl.neighbors.length);
+  const k = Math.max(1, hl.neighbours.length);
   const segments =
     hl.metric === 'graph'
       ? hl.edges.map(([u, v]) => ({ path: [graph.nodes[u], graph.nodes[v]] }))
-      : hl.neighbors.map(n => ({ path: [src, graph.nodes[n.node]] }));
+      : hl.neighbours.map(n => ({ path: [src, graph.nodes[n.node]] }));
 
   return [
     new PathLayer({
@@ -213,15 +247,16 @@ export function buildGraphHighlightLayers(
     }),
     new ScatterplotLayer({
       id: 'graph-hl-nodes',
-      data: hl.neighbors,
-      getPosition: (d: Neighbor) => graph.nodes[d.node],
-      getRadius: (d: Neighbor) => neighborRadiusPx(d.rank, k),
+      data: hl.neighbours,
+      getPosition: (d: Neighbour) => graph.nodes[d.node],
+      // Closer neighbours are drawn larger, so rank reads without the labels.
+      getRadius: (d: Neighbour) => neighbourRadiusPx(d.rank, k),
       radiusUnits: 'pixels',
       getFillColor: rgba(theme.highlight),
       stroked: true,
       getLineColor: rgba(theme.graph.halo),
       lineWidthUnits: 'pixels',
-      getLineWidth: NEIGHBOR_STROKE_PX,
+      getLineWidth: NEIGHBOUR_STROKE_PX,
       pickable: false
     }),
     new ScatterplotLayer({

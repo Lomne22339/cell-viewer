@@ -1,4 +1,9 @@
-"""Chat proxy: the API key stays here; the browser only posts a selection summary."""
+"""Chat proxy.
+
+The browser never holds the API key and never talks to Anthropic directly.
+It posts a summarised selection here; this module turns that summary into a
+prompt, calls the model, and streams the reply back as server-sent events.
+"""
 from __future__ import annotations
 
 import json
@@ -36,10 +41,19 @@ SYSTEM_PROMPT = (
 
 class Turn(BaseModel):
     role: str
+    # The browser sends history back on every question, so an unbounded turn
+    # would let one pasted document be billed again with every follow-up.
     text: str = Field(max_length=MAX_TURN_CHARS)
 
 
 def trim_history(history: list[Turn], budget: int = MAX_HISTORY_CHARS) -> list[Turn]:
+    """The newest turns whose text fits in `budget` characters.
+
+    Turns are dropped oldest first, and a turn is kept whole or not at all, so
+    the model never sees half of an earlier answer. Ten turns at the per-turn
+    cap would still be 200,000 characters; this keeps the prompt's size, and
+    its cost, bounded however long the conversation runs.
+    """
     kept: list[Turn] = []
     total = 0
     for turn in reversed(history):
@@ -57,7 +71,8 @@ class ChatRequest(BaseModel):
     history: list[Turn] = Field(default_factory=list)
 
 
-# Enough digits for any double below 1e21 at three decimals, so quantize never loses precision.
+# Enough digits for any double below 1e21 at three decimals, so quantize
+# never runs out of precision whatever the caller's decimal context says.
 _DECIMAL = Context(prec=60, rounding=ROUND_HALF_UP)
 
 
@@ -76,7 +91,15 @@ def _finite(value: Any) -> bool:
 
 
 def _to_fixed(value: Any, digits: int) -> str:
-    """JavaScript's `toFixed`, character for character (ties round away from zero)."""
+    """JavaScript's `Number.prototype.toFixed`, character for character.
+
+    `toFixed` rounds the exact binary value of the double, and breaks a true
+    tie (0.125 to two places) away from zero. Python's `format` rounds that
+    tie to even and prints "0.12" where the browser printed "0.13", which is
+    enough to make the two renderers disagree. `Decimal(float)` is the exact
+    binary value, and ROUND_HALF_UP is away from zero, so this matches.
+    Missing and non-finite values print as "n/a", as in the TypeScript.
+    """
     if not _finite(value):
         return "n/a"
     x = float(value)
@@ -93,10 +116,11 @@ def _percent(part: float, whole: float, digits: int) -> str:
     try:
         return _to_fixed(part / whole * 100, digits)
     except ZeroDivisionError:
-        return "n/a"
+        return "n/a"  # JavaScript gets Infinity or NaN here, which also prints n/a
 
 
 def _js_str(value: Any, default: str = "") -> str:
+    """A value as a JavaScript template literal or `join` would print it."""
     if value is None:
         return default
     if isinstance(value, float) and value.is_integer():
@@ -105,6 +129,7 @@ def _js_str(value: Any, default: str = "") -> str:
 
 
 def _grouped(value: Any) -> str:
+    """`toLocaleString('en-US')` for the whole-number counts a context carries."""
     if isinstance(value, float) and value.is_integer():
         value = int(value)
     return f"{value:,}" if _finite(value) else _js_str(value)
@@ -123,7 +148,17 @@ def _at(seq: list, i: int) -> Any:
 
 
 def render_context_as_text(ctx: dict[str, Any] | None) -> str:
-    """Python twin of the TypeScript `renderContextAsText`: keep the two in step."""
+    """Python twin of the TypeScript `renderContextAsText`.
+
+    Both sides must describe a selection identically, otherwise testing
+    against the browser's mock adapter stops predicting what the real model
+    will see. The golden cases in
+    packages/core/test/fixtures/render-context.json are asserted against both.
+
+    The context comes from the browser and is only shape-checked by the
+    route, so this never raises on a malformed one: anything missing or of
+    the wrong type is printed as "n/a" or skipped, and the rest still renders.
+    """
     if not isinstance(ctx, dict) or not _finite(ctx.get("n")) or not ctx["n"] > 0:
         return "No cells are currently selected in the viewer."
 
@@ -149,7 +184,7 @@ def render_context_as_text(ctx: dict[str, Any] | None) -> str:
         f"Region: x {_to_fixed(_at(bbox, 0), 2)} to {_to_fixed(_at(bbox, 2), 2)}, "
         f"y {_to_fixed(_at(bbox, 1), 2)} to {_to_fixed(_at(bbox, 3), 2)}; "
         f"centroid ({_to_fixed(_at(cen, 0), 2)}, {_to_fixed(_at(cen, 1), 2)}).",
-        f'Currently colored by: {_js_str(ctx.get("colorBy"), "?")}.',
+        f'Currently coloured by: {_js_str(ctx.get("colorBy"), "?")}.',
     ]
     for field, labels in _dict(ctx.get("hidden")).items():
         labels = _list(labels)
@@ -162,6 +197,7 @@ def render_context_as_text(ctx: dict[str, Any] | None) -> str:
 
     omitted_by_field = _dict(ctx.get("omittedLevels"))
     for field, counts in _dict(ctx.get("breakdown")).items():
+        # Stable, like Array.prototype.sort: equal counts keep their JSON order.
         levels = sorted(
             ((label, count) for label, count in _dict(counts).items() if _finite(count)),
             key=lambda kv: -kv[1],
@@ -171,6 +207,7 @@ def render_context_as_text(ctx: dict[str, Any] | None) -> str:
         lines.append(f"{field} composition:")
         for label, count in levels[:MAX_LEVELS_SHOWN]:
             lines.append(f"  {label}: {_grouped(count)} ({_percent(count, n, 1)}%)")
+        # Levels sent but not printed, plus levels the browser never sent.
         omitted = omitted_by_field.get(field)
         more = max(0, len(levels) - MAX_LEVELS_SHOWN) + (omitted if _finite(omitted) else 0)
         if more > 0:
@@ -194,7 +231,13 @@ def render_context_as_text(ctx: dict[str, Any] | None) -> str:
 async def stream_anthropic(
     system: str, messages: list[dict[str, str]], model: str
 ) -> AsyncIterator[str]:
-    """Streams text deltas from the Messages API; an `error` event mid-stream raises."""
+    """Streams text deltas from the Messages API. Replaced by a stub in tests.
+
+    The API can fail after it has already answered 200 — an overload, say —
+    by sending an `error` event mid-stream. That raises here, so the route
+    sends the client an error frame instead of ending a truncated reply as
+    if it were complete.
+    """
     key = os.environ["ANTHROPIC_API_KEY"]
     payload = {
         "model": model,
@@ -240,6 +283,15 @@ async def stream_anthropic(
 
 
 def normalize_messages(history: list[Turn], question: str) -> list[dict[str, str]]:
+    """Shape a conversation the way the Messages API requires.
+
+    Two rules have to hold: the first message is from the user, and roles
+    alternate. Neither survives naive slicing — trimming a conversation to its
+    last ten turns can cut mid-pair and open with the assistant, and a history
+    whose final turn is already a user message would be followed by the new
+    question as a second user message in a row. Both are rejected by the API,
+    so they are fixed here rather than discovered in production.
+    """
     messages: list[dict[str, str]] = []
     for turn in history:
         text = (turn.text or "").strip()
@@ -247,6 +299,7 @@ def normalize_messages(history: list[Turn], question: str) -> list[dict[str, str
             continue
         role = "assistant" if turn.role == "assistant" else "user"
         if not messages and role == "assistant":
+            # A conversation cannot open with the assistant.
             continue
         if messages and messages[-1]["role"] == role:
             messages[-1]["content"] += "\n\n" + text
@@ -288,7 +341,8 @@ async def chat(req: ChatRequest) -> StreamingResponse:
     try:
         summary = render_context_as_text(req.context)
     except (ValueError, TypeError) as exc:
-        # Backstop: an unreadable context is the client's error (422), not a 500.
+        # The renderer tolerates malformed contexts; this is the backstop, so
+        # a context it cannot read is the client's error, not a 500.
         raise HTTPException(status_code=422, detail=f"malformed selection context: {exc}") from exc
     question = (
         "Current selection in the viewer:\n\n"

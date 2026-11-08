@@ -12,12 +12,20 @@ export interface FigureEvents {
 
 export interface FigureHandle {
   readonly el: SVGSVGElement;
+  /** Fill per segment; null draws the "no data" hatch. */
   setFills: (fill: (segment: number) => string | null) => void;
   setSelected: (segments: ReadonlySet<number>) => void;
   destroy: () => void;
 }
 
-/** Draws an organ as interactive SVG: surface, then decor, then dashed deep structures on top. */
+/**
+ * Draws an organ model as an interactive SVG.
+ *
+ * Surface segments go first in model order (so the body's skin sits under its
+ * organs), decor above them, and deep structures last, dashed, so they read as
+ * seen through the surface and still take clicks. Every colour that depends on
+ * the theme is a CSS custom property; the caller only supplies data fills.
+ */
 export function renderOrgan(model: OrganModel, events: FigureEvents = {}): FigureHandle {
   const id = `organ-${model.id}-${++uid}`;
   const svg = document.createElementNS(SVG_NS, 'svg');
@@ -66,6 +74,7 @@ export function renderOrgan(model: OrganModel, events: FigureEvents = {}): Figur
   const onLeave = (ev: PointerEvent): void => events.onHover?.(null, ev);
   const onFocus = (ev: FocusEvent): void => events.onHover?.(segOf(ev.target), ev);
   const onBlur = (ev: FocusEvent): void => {
+    // Leaving the figure by keyboard ends the "hover", as pointerleave does.
     if (!svg.contains(ev.relatedTarget as Node | null)) events.onHover?.(null, ev);
   };
   const onClick = (ev: MouseEvent): void => {

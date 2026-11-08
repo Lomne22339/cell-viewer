@@ -2,11 +2,16 @@ import { toHex } from '@core/theme/themes';
 import type { ThemeStore } from '../theme';
 import { esc } from './escape';
 
+/**
+ * The four background choices the client asked for, as one segmented control
+ * in the top bar. Each button shows its own background as a swatch, so the
+ * choice is visible before it is made.
+ */
 export function createThemePicker(root: HTMLElement, store: ThemeStore): () => void {
   const box = document.createElement('div');
   box.className = 'theme-picker';
   box.setAttribute('role', 'group');
-  box.setAttribute('aria-label', 'Background color');
+  box.setAttribute('aria-label', 'Background colour');
   box.innerHTML =
     `<span class="label">Background</span>` +
     store

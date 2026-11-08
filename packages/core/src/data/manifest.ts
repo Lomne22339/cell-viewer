@@ -7,9 +7,18 @@ export interface Manifest {
   categorical: Record<string, { levels: string[] }>;
   numeric: Record<string, { min: number; max: number }>;
   hasGraph: boolean;
-  /** Changes on every re-prepare; appended to chunk URLs so stale cached chunks are never reused. */
+  /**
+   * Changes whenever the dataset is prepared again. The loader appends it to
+   * chunk URLs so cached chunks from an earlier preparation are never reused.
+   */
   version?: string;
+  /** Whether the server knows each cell's own name (see `fetchCellInfo`). */
   cellIds?: boolean;
+  /**
+   * What a dataset says about itself. `synthetic` marks simulated data (the
+   * Organ View's organs), which the viewer labels wherever it shows them.
+   */
+  meta?: { synthetic?: boolean; organ?: string; kind?: string };
 }
 
 export interface PrincipalGraph {

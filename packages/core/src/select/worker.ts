@@ -33,7 +33,10 @@ export function createWorkerState(): WorkerState {
   return { xy: null, grid: null, count: 0 };
 }
 
-/** Pure message handler, separate from the Worker global so it runs in Node. */
+/**
+ * Pure message handler, kept separate from the Worker global so it can be
+ * tested in Node. The worker entry below is a thin shim over it.
+ */
 export function handleMessage(
   state: WorkerState,
   msg: WorkerRequest
@@ -49,6 +52,10 @@ export function handleMessage(
     return { reply: { type: 'error', id: msg.id, message: 'query before init' }, transfer: [] };
   }
 
+  // A query can name more cells than were sent — the caller is meant to
+  // re-send first, but the worker must not read past its own buffer if it
+  // does not. Clamp to what is actually here, and rebuild the index if the
+  // prefix has grown.
   const available = state.xy.length / 2;
   const count = Math.min(msg.count, available);
   if (count > state.count) {
@@ -75,6 +82,7 @@ export function handleMessage(
   };
 }
 
+/** The id of a request, if it has one: `init` does not, nor does garbage. */
 function requestId(msg: unknown): number | undefined {
   const id = (msg as { id?: unknown } | null)?.id;
   return typeof id === 'number' ? id : undefined;
@@ -84,6 +92,14 @@ function errorReply(msg: unknown, err: unknown): WorkerReply {
   return { type: 'error', id: requestId(msg), message: err instanceof Error ? err.message : String(err) };
 }
 
+/**
+ * `handleMessage` that never throws.
+ *
+ * A request that fails is answered with an error carrying its own id, so the
+ * client rejects that one request and every other pending query still
+ * resolves. An error without an id makes the client reject everything it is
+ * waiting on, which is right for a failed `init` and wrong for one bad lasso.
+ */
 export function respond(
   state: WorkerState,
   msg: WorkerRequest
@@ -95,6 +111,8 @@ export function respond(
   }
 }
 
+// Worker entry. The canonical worker check, so importing this module in Node
+// (for the protocol tests) or on the main thread is inert.
 const scope = globalThis as unknown as { WorkerGlobalScope?: unknown };
 const isWorker =
   typeof scope.WorkerGlobalScope !== 'undefined' &&
@@ -110,6 +128,8 @@ if (isWorker) {
     try {
       self.postMessage(reply, transfer);
     } catch (err) {
+      // Posting itself can fail (a buffer that cannot be cloned); that, too,
+      // belongs to this request alone.
       self.postMessage(errorReply(ev.data, err));
     }
   };

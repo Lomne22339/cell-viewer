@@ -1,12 +1,28 @@
 import type { PrincipalGraph } from '../data/manifest';
 
-/** Neighborhood queries on the principal graph: geodesic (default) or embedding-space distance. */
+/**
+ * Neighbourhood queries on the principal graph, for "click a node, highlight
+ * the closest nodes".
+ *
+ * "Closest" has two honest meanings on a trajectory. Along the graph —
+ * geodesic distance, the sum of edge lengths — is what a developmental
+ * question means: which states come just before and after this one. In the
+ * embedding — straight-line distance — is what the eye sees, and it can jump
+ * between branches that merely pass near each other. Both are offered; the
+ * graph metric is the default.
+ *
+ * Graphs here are hundreds to a few thousand nodes, so plain arrays are fine;
+ * the adjacency is still compressed (CSR) because it is built once and walked
+ * many times.
+ */
 
 export interface GraphIndex {
+  /** Node count. */
   m: number;
   /** Edges of node n are `targets[offsets[n] .. offsets[n + 1])`. */
   offsets: Uint32Array;
   targets: Uint32Array;
+  /** Euclidean edge length, parallel to `targets`. */
   weights: Float64Array;
 }
 
@@ -39,11 +55,13 @@ export function degreeOf(index: GraphIndex, node: number): number {
 }
 
 export interface ShortestPaths {
+  /** Geodesic distance from the source; Infinity when unreachable. */
   dist: Float64Array;
   /** Previous node on a shortest path, or -1 for the source and unreachable nodes. */
   prev: Int32Array;
 }
 
+/** Dijkstra with a binary heap. Ties settle in node-index order, so results are deterministic. */
 export function shortestPaths(index: GraphIndex, source: number): ShortestPaths {
   const { m, offsets, targets, weights } = index;
   const dist = new Float64Array(m).fill(Infinity);
@@ -51,6 +69,7 @@ export function shortestPaths(index: GraphIndex, source: number): ShortestPaths 
   if (source < 0 || source >= m) return { dist, prev };
   dist[source] = 0;
 
+  // Heap of node ids ordered by (dist, id). Stale entries are skipped on pop.
   const heap: number[] = [source];
   const heapDist: number[] = [0];
   const less = (a: number, b: number): boolean =>
@@ -120,24 +139,28 @@ export function nodeKind(graph: PrincipalGraph, index: GraphIndex, node: number)
   return 'internal';
 }
 
-export type NeighborMetric = 'graph' | 'euclidean';
+export type NeighbourMetric = 'graph' | 'euclidean';
 
-export interface Neighbor {
+export interface Neighbour {
   node: number;
   distance: number;
   /** 1 for the closest. */
   rank: number;
 }
 
-/** The `k` nearest nodes to `source`, closest first, excluding it; other components never count. */
+/**
+ * The `k` nodes closest to `source`, closest first, excluding the source.
+ * Ties are broken by node index. Under the graph metric, nodes in another
+ * connected component are never "close".
+ */
 export function closestNodes(
   graph: PrincipalGraph,
   index: GraphIndex,
   source: number,
   k: number,
-  metric: NeighborMetric = 'graph',
+  metric: NeighbourMetric = 'graph',
   paths: ShortestPaths = shortestPaths(index, source)
-): Neighbor[] {
+): Neighbour[] {
   if (source < 0 || source >= index.m || k <= 0) return [];
   const [sx, sy] = graph.nodes[source];
   const cand: { node: number; distance: number }[] = [];
@@ -153,6 +176,11 @@ export function closestNodes(
   return cand.slice(0, k).map((c, i) => ({ ...c, rank: i + 1 }));
 }
 
+/**
+ * Edges on the shortest paths from the source to each target, deduplicated,
+ * each as `[from, to]` with `from` nearer the source. Drawn as the highlighted
+ * stretch of trajectory joining a node to its neighbours.
+ */
 export function shortestPathEdges(
   prev: Int32Array,
   source: number,
@@ -190,7 +218,10 @@ export function nearestNode(graph: PrincipalGraph, x: number, y: number, maxDist
   return best;
 }
 
-/** Geodesic distance from the root scaled to [0, 1]; unreachable nodes get NaN. */
+/**
+ * Graph pseudotime per node: geodesic distance from the root, scaled to
+ * [0, 1] over the reachable nodes. Unreachable nodes get NaN.
+ */
 export function nodePseudotime(graph: PrincipalGraph, index: GraphIndex): Float64Array {
   const { dist } = shortestPaths(index, graph.root);
   let max = 0;

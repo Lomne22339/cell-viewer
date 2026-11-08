@@ -13,17 +13,25 @@ import type { ScatterCanvas } from '../views/ScatterCanvas';
 
 export type InsetMode = 'zoom' | 'overview' | 'anatomy' | 'image';
 
+/**
+ * Chunks the zoom inset draws: as many as the main view up to four (one
+ * million points), so the magnified region is as dense as what it magnifies.
+ * The overview needs only the first, pre-shuffled chunk.
+ */
 const ZOOM_CHUNKS = 4;
 
 const STORAGE_KEY = 'cellviewer.inset';
+/** Used only before the frame has been laid out once. */
 const HEADER_PX = 27;
 const MIN_W = 200;
 const MIN_H = 150;
 
 export interface InsetDeps {
+  /** The canvas holder; the frame, marker and connectors are positioned in it. */
   host: HTMLElement;
   canvas: ScatterCanvas;
   store: CellStore;
+  /** Builds the anatomy figure inside the inset body; returns its teardown. */
   mountAnatomy: (el: HTMLElement) => () => void;
   onOpenChange?: (open: boolean) => void;
 }
@@ -41,7 +49,21 @@ function loadPersisted(): Partial<Persisted> {
   }
 }
 
-/** Foreground inset: zoom, overview or anatomy; a second deck.gl view on the shared GPU buffers. */
+/**
+ * The foreground inset (client item UI-5).
+ *
+ * A panel floats over the plot. In **zoom** mode it shows a magnified region
+ * of the embedding; the region is marked on the main plot by a dashed
+ * rectangle that can be dragged and resized, and two connector lines join the
+ * mark to the panel — the `mark_inset` convention scientific figures use to
+ * show two scales at once. **Overview** shows the whole dataset with the main
+ * viewport outlined, and clicking or dragging in it moves the main view.
+ * **Anatomy** hosts the segmented organ figure.
+ *
+ * The magnified picture is a second deck.gl view over the same layers and
+ * GPU buffers, not a second WebGL context; all this class does is choose its
+ * rectangle and camera and keep the DOM furniture aligned with it.
+ */
 export class InsetController {
   private frameEl: HTMLElement;
   private bodyEl: HTMLElement;
@@ -130,13 +152,17 @@ export class InsetController {
 
   show(mode: InsetMode = this.mode): void {
     if (!this.open) {
+      // The region starts on whatever the user is looking at: a small window
+      // at the centre of the current view, so the inset opens at roughly
+      // 2.5x rather than barely magnified.
       const { width, height } = this.deps.canvas.size();
       const a = this.deps.canvas.screenToWorld(width * 0.44, height * 0.5);
       const b = this.deps.canvas.screenToWorld(width * 0.56, height * 0.5);
-      const center = this.deps.canvas.screenToWorld(width / 2, height / 2);
+      const centre = this.deps.canvas.screenToWorld(width / 2, height / 2);
       const [x0, y0, x1, y1] = this.deps.store.bounds;
-      const ready = Number.isFinite(center[0]) && Number.isFinite(a[0]) && Number.isFinite(b[0]);
-      this.regionCenter = ready ? center : [(x0 + x1) / 2, (y0 + y1) / 2];
+      const ready = Number.isFinite(centre[0]) && Number.isFinite(a[0]) && Number.isFinite(b[0]);
+      // Before deck.gl has a viewport, fall back to the middle of the data.
+      this.regionCenter = ready ? centre : [(x0 + x1) / 2, (y0 + y1) / 2];
       this.regionWidth = ready ? Math.max(Math.abs(b[0] - a[0]), 1e-6) : (x1 - x0) / 8;
     }
     this.open = true;
@@ -187,10 +213,16 @@ export class InsetController {
     this.layout();
   }
 
+  /** The main view moved: realign the marker, connectors and overview box. */
   onViewChanged(): void {
     if (this.open) this.positionOverlays();
   }
 
+  /**
+   * Where the magnified picture is drawn, in canvas pixels: the body element
+   * as actually laid out, so the deck.gl view and the DOM panel coincide to
+   * the pixel whatever the header's rendered height.
+   */
   private bodyRect(): ScreenRect {
     if (this.body) return this.body;
     const f = this.frame;
@@ -210,6 +242,7 @@ export class InsetController {
     return regionAround(this.regionCenter, this.regionWidth, b.h / b.w);
   }
 
+  /** Places the frame and re-aims the inset camera. */
   private layout(): void {
     if (!this.open) return;
     const { width, height } = this.deps.canvas.size();
@@ -241,6 +274,7 @@ export class InsetController {
     this.positionOverlays();
   }
 
+  /** Marker, connectors and the overview's viewport box: pure DOM, cheap per frame. */
   private positionOverlays(): void {
     const zoomMode = this.open && this.mode === 'zoom';
     this.markerEl.hidden = !zoomMode;
@@ -257,6 +291,8 @@ export class InsetController {
         h: Math.abs(b[1] - a[1])
       };
       Object.assign(this.markerEl.style, { left: `${m.x}px`, top: `${m.y}px`, width: `${m.w}px`, height: `${m.h}px` });
+      // The marker is drawn in the page, above the canvas; where the panel
+      // covers its own region it would be drawn over the magnified picture.
       this.markerEl.hidden = rectsIntersect(m, this.frame);
       const lines = connectorLines(m, this.frame);
       this.svg.style.display = lines.length ? '' : 'none';
@@ -295,7 +331,12 @@ export class InsetController {
     }
   }
 
-  /** Image mode: a user-chosen picture in the foreground, kept in this page and never uploaded. */
+  /**
+   * Image mode: a picture of the user's choosing in the foreground — a
+   * histology section, a figure panel — which is the other common meaning of
+   * "image inset". Picked or dropped; it stays in this page only and is
+   * never uploaded.
+   */
   private mountImage(): void {
     if (this.imageEl) return;
     const el = document.createElement('div');
@@ -345,6 +386,7 @@ export class InsetController {
     return [ev.clientX - r.left, ev.clientY - r.top];
   }
 
+  /** Buttons act on click, so Enter and Space work as well as the mouse. */
   private onFrameClick = (ev: MouseEvent): void => {
     const t = ev.target as HTMLElement;
     const modeBtn = t.closest<HTMLButtonElement>('[data-mode]');
@@ -352,6 +394,7 @@ export class InsetController {
     else if (t.closest('.close')) this.close();
   };
 
+  /** Pointer presses start drags: the frame, its resize grip, or overview navigation. */
   private onFramePointerDown = (ev: PointerEvent): void => {
     const t = ev.target as HTMLElement;
     ev.stopPropagation();
@@ -362,7 +405,7 @@ export class InsetController {
     else if (t.closest('header')) this.drag = { kind: 'frame', ...base };
     else if (this.mode === 'overview' && t.closest('.inset-body')) {
       this.drag = { kind: 'overview', ...base };
-      this.recenterFromOverview(x, y);
+      this.recentreFromOverview(x, y);
     } else return;
     ev.preventDefault();
   };
@@ -403,7 +446,7 @@ export class InsetController {
       this.regionWidth = Math.max(1e-6, 2 * Math.abs(w[0] - this.regionCenter[0]));
       this.layout();
     } else if (d.kind === 'overview') {
-      this.recenterFromOverview(x, y);
+      this.recentreFromOverview(x, y);
     }
   };
 
@@ -413,12 +456,13 @@ export class InsetController {
     this.persist();
   };
 
-  private recenterFromOverview(x: number, y: number): void {
+  private recentreFromOverview(x: number, y: number): void {
     const body = this.bodyRect();
     const w = this.deps.canvas.insetScreenToWorld(x - body.x, y - body.y);
     if (w) this.deps.canvas.panTo(w, 0);
   }
 
+  /** Wheel over the zoom inset changes its magnification. */
   private onWheel = (ev: WheelEvent): void => {
     if (this.mode !== 'zoom') return;
     ev.preventDefault();
@@ -426,6 +470,7 @@ export class InsetController {
     this.layout();
   };
 
+  /** Double-click the zoom inset to take the main view to that region. */
   private onBodyDoubleClick = (): void => {
     if (this.mode === 'zoom') this.deps.canvas.fitBounds(this.region());
   };

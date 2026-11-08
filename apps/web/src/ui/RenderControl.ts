@@ -2,7 +2,13 @@ export interface RenderControlHandle {
   setBlend: (on: boolean) => void;
 }
 
-/** Translucent points show density, but blending is the costliest setting, so it ships off. */
+/**
+ * Exposes the one rendering trade-off worth giving the user.
+ *
+ * Translucent points show density where cells pile up, but blending is by far
+ * the most expensive thing the renderer does — about four times the frame cost
+ * at a million points on a tile-based GPU — so it ships off.
+ */
 export function createRenderControl(
   root: HTMLElement,
   initial: boolean,

@@ -1,6 +1,13 @@
-/** Color tables as flat RGB byte triplets (Uint8Array), consumed in per-cell loops. */
+/**
+ * Colour tables as flat RGB byte triplets.
+ *
+ * These are consumed inside per-cell loops that run over millions of
+ * elements, so they are plain Uint8Arrays indexed arithmetically rather
+ * than arrays of objects or CSS strings.
+ */
 import { contrastRatio, relativeLuminance, type Rgb } from '../theme/themes';
 
+/** 24 hues chosen to stay distinguishable at one-pixel point size. */
 const BASE_CATEGORICAL: number[] = [
   31, 119, 180, 255, 127, 14, 44, 160, 44, 214, 39, 40,
   148, 103, 189, 140, 86, 75, 227, 119, 194, 127, 127, 127,
@@ -12,6 +19,12 @@ const BASE_CATEGORICAL: number[] = [
 
 const BASE_HUES = BASE_CATEGORICAL.length / 3;
 
+/**
+ * Every colour `paletteFor` can hand out: the base hues, then the darker
+ * cycle (levels 24–47, 72–95, ...), then the brighter one (48–71, 96–119, ...).
+ * Seventy-two entries cover any level count, so adjusting a palette to a
+ * background is seventy-two contrast searches however many levels there are.
+ */
 const VARIANTS = (() => {
   const out = new Uint8Array(BASE_HUES * 3 * 3);
   [1, 0.72, 1.28].forEach((shift, v) => {
@@ -22,12 +35,30 @@ const VARIANTS = (() => {
   return out;
 })();
 
+/** Smallest WCAG contrast a categorical colour may have against the plot background. */
 const CATEGORICAL_MIN_CONTRAST = 3;
-// Lower than categorical: a ramp is read by gradient, and 3:1 would flatten viridis' bright end.
+/**
+ * The floor for continuous ramps is lower: a ramp is read by its gradient,
+ * and pushing every step to 3:1 would flatten the bright end of viridis into
+ * a band of near-identical olives on a white plot.
+ */
 const RAMP_MIN_CONTRAST = 2.5;
+/** 2% of the way to black or white per step, so a colour stops just past the bar. */
 const ADJUST_STEPS = 50;
 
+/**
+ * A copy of an RGB table with every colour that would fade into `background`
+ * pushed away from it until it reaches `minRatio`.
+ *
+ * Colours are darkened toward black on a light background and lightened
+ * toward white on a dark one, by scaling (or mixing) all three channels
+ * together, which keeps the hue and only moves the brightness. Black and
+ * white are always far enough from any background on their own side of the
+ * mid-grey (at least 4.5:1), so the search always ends. Colours that already
+ * pass are copied unchanged.
+ */
 function adjustTable(table: Uint8Array, background: Rgb, minRatio: number): Uint8Array {
+  // Light means black offers more contrast headroom than white does.
   const lum = relativeLuminance(background);
   const darken = (lum + 0.05) / 0.05 > 1.05 / (lum + 0.05);
   const out = table.slice();
@@ -60,6 +91,11 @@ function adjustTable(table: Uint8Array, background: Rgb, minRatio: number): Uint
 
 const adjusted = new WeakMap<Uint8Array, Map<string, Uint8Array>>();
 
+/**
+ * `adjustTable`, cached by table identity, background and floor. Recolouring
+ * runs on every chunk of a ten-million-cell load and on every selection
+ * change, and the answer only changes with the theme.
+ */
 function adjustForBackground(table: Uint8Array, background: Rgb, minRatio: number): Uint8Array {
   const key = `${minRatio}|${background[0]},${background[1]},${background[2]}`;
   let perTable = adjusted.get(table);
@@ -75,6 +111,16 @@ function adjustForBackground(table: Uint8Array, background: Rgb, minRatio: numbe
   return out;
 }
 
+/**
+ * Palette sized to the level count. Beyond 24 levels the hues repeat with a
+ * brightness shift; distinguishing more than that by colour alone does not
+ * work anyway, and the legend carries the labels.
+ *
+ * With a `background`, every colour is guaranteed 3:1 contrast against it
+ * (see `adjustTable`): pale yellows and light greys that read on
+ * black vanish on the white and light-yellow themes. Without one, the output
+ * is the unadjusted palette.
+ */
 export function paletteFor(levelCount: number, background?: Rgb): Uint8Array {
   const table = background ? adjustForBackground(VARIANTS, background, CATEGORICAL_MIN_CONTRAST) : VARIANTS;
   const out = new Uint8Array(Math.max(0, levelCount) * 3);
@@ -89,10 +135,21 @@ export function paletteFor(levelCount: number, background?: Rgb): Uint8Array {
   return out;
 }
 
+/**
+ * Background-adjusted copy of any RGB table at the ramp floor (2.5:1).
+ *
+ * Exported for callers that hold a ramp array rather than a name, such as
+ * `recolorNumeric`. Cached per array and background; the input is never
+ * modified.
+ */
 export function adjustRamp(ramp: Uint8Array, background: Rgb): Uint8Array {
   return adjustForBackground(ramp, background, RAMP_MIN_CONTRAST);
 }
 
+/**
+ * Single colour at the categorical floor (3:1), for a dataset coloured by
+ * one constant colour.
+ */
 export function adjustColor(rgb: readonly [number, number, number], background: Rgb): Rgb {
   const one = adjustTable(Uint8Array.from(rgb), background, CATEGORICAL_MIN_CONTRAST);
   return [one[0], one[1], one[2]];
@@ -125,12 +182,19 @@ export const MAGMA = buildRamp([
 
 export const RAMPS: Record<string, Uint8Array> = { viridis: VIRIDIS, magma: MAGMA };
 
+/**
+ * A ramp by name, falling back to viridis for a name nobody registered. With a
+ * `background`, every step is lifted to 2.5:1 against it (see `adjustRamp`):
+ * magma starts at near-black, which disappears on the black theme, and
+ * viridis ends in a yellow that disappears on white.
+ */
 export function rampFor(name: string, background?: Rgb): Uint8Array {
   // `in` or a bare index would also find `constructor` and friends.
   const ramp = Object.hasOwn(RAMPS, name) ? RAMPS[name] : VIRIDIS;
   return background ? adjustRamp(ramp, background) : ramp;
 }
 
+/** Writes RGB for position `t` in [0,1] into `out` at `offset`. Clamps. */
 export function rampSample(ramp: Uint8Array, t: number, out: Uint8Array, offset: number): void {
   const steps = ramp.length / 3;
   let i = Math.round(t * (steps - 1));

@@ -2,11 +2,16 @@ import type { OrganModel } from './types';
 import { normalizeLabel } from './match';
 import { pathBounds } from './path';
 
+/**
+ * Every problem with a model that would render wrongly or match ambiguously.
+ * An empty list means the model is safe to register.
+ */
 export function validateModel(model: OrganModel): string[] {
   const errors: string[] = [];
   if (!model.id) errors.push('model has no id');
   if (model.segments.length === 0) errors.push(`${model.id}: no segments`);
   const [vx, vy, vw, vh] = model.viewBox;
+  // A little slack: a stroke on the outermost edge may legitimately touch it.
   const slack = 0.02 * Math.max(vw, vh);
 
   const ids = new Set<string>();
@@ -40,6 +45,12 @@ export function validateModel(model: OrganModel): string[] {
   }
 }
 
+/**
+ * The set of organ models a viewer offers.
+ *
+ * Registration validates, so a broken model fails at start-up with a message
+ * naming the segment instead of rendering as a hole.
+ */
 export class OrganRegistry {
   private models = new Map<string, OrganModel>();
 
@@ -59,10 +70,12 @@ export class OrganRegistry {
     return this.models.has(id);
   }
 
+  /** In registration order, which is the order the panel shows them. */
   list(): OrganModel[] {
     return [...this.models.values()];
   }
 
+  /** Drill-down links that point at a model nobody registered. */
   danglingDrillDowns(): string[] {
     const out: string[] = [];
     for (const m of this.models.values()) {

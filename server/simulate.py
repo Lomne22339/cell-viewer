@@ -1,4 +1,10 @@
-"""Synthetic single-cell embeddings that look like UMAP output: dense islands, sparse bridges."""
+"""Synthetic single-cell embeddings that look like real UMAP output.
+
+Real UMAPs are dense islands joined by sparse bridges, not uniform clouds.
+Fidelity matters here: overdraw, level-of-detail and selection latency all
+behave differently on clustered data than on a uniform square, so testing
+against a uniform cloud would flatter the renderer.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -18,6 +24,15 @@ STAGES = ["E9.5", "E12.5", "E15.5", "P0", "P7", "adult"]
 
 @dataclass
 class SimDataset:
+    """One row per cell, in every column.
+
+    `ids` is each cell's own name in its source (AnnData obs_names, a
+    Parquet barcode), so a cell clicked in the viewer can be traced back to
+    the user's file; None when the source has no names. `source_rows` is
+    the row each cell came from in that source. The tile writer sets it
+    before dropping or shuffling anything, and None means rows are still in
+    source order.
+    """
 
     xy: np.ndarray
     codes: dict[str, np.ndarray] = field(default_factory=dict)
@@ -32,11 +47,20 @@ class SimDataset:
 
 
 def _id_width(n: int) -> int:
+    """Digits in a synthetic id: seven, or more once n - 1 needs them, so
+    ids stay unique and still sort in generation order."""
     return max(7, len(str(max(n - 1, 0))))
 
 
 def synthetic_ids(n: int) -> np.ndarray:
-    """`cell-0000000`, `cell-0000001`, ... derived from n alone, so no randomness is consumed."""
+    """`cell-0000000`, `cell-0000001`, ... for n cells in generation order.
+
+    Simulated cells get names so the viewer's cell card works on them exactly
+    as on real data. Built with NumPy's vectorised string functions: a million
+    ids take about a tenth of a second, where a Python loop takes several
+    times that. Derived from n alone, so no randomness is consumed and the
+    simulators' other output is unchanged by it.
+    """
     digits = np.strings.zfill(np.arange(n).astype(np.str_), _id_width(n))
     return np.strings.add("cell-", digits)
 
@@ -51,9 +75,11 @@ class PrincipalGraph:
 
 
 def _cluster_sizes(rng: np.random.Generator, n: int, k: int) -> np.ndarray:
+    """Zipf-ish sizes: a few big populations, a long tail of rare ones."""
     w = rng.dirichlet(np.full(k, 0.7))
     sizes = np.floor(w * n).astype(np.int64)
     sizes[sizes < 1] = 1
+    # Fix rounding drift onto the largest cluster so the total is exactly n.
     while sizes.sum() > n:
         biggest = int(np.argmax(sizes))
         sizes[biggest] -= 1
@@ -77,11 +103,13 @@ def simulate_embedding(n: int, seed: int = 0) -> SimDataset:
         m = int(sizes[c])
         if m <= 0:
             continue
+        # Anisotropic blob: real clusters are elongated, not circular.
         scale = rng.uniform(1.2, 4.5, size=2)
         theta = rng.uniform(0, np.pi)
         rot = np.array([[np.cos(theta), -np.sin(theta)],
                         [np.sin(theta), np.cos(theta)]])
         pts = rng.standard_normal((m, 2)) * scale
+        # A heavy tail gives the wisps that connect islands in a real UMAP.
         tail = rng.standard_normal((m, 2)) * scale * 3.0
         pick = rng.random(m) < 0.04
         pts[pick] = tail[pick]
@@ -89,6 +117,7 @@ def simulate_embedding(n: int, seed: int = 0) -> SimDataset:
         ct[off:off + m] = c
         off += m
 
+    # Metadata correlated with cell type, the way real annotations are.
     tissue = np.empty(n, dtype=np.uint16)
     for c in range(k):
         sel = ct == c
@@ -119,7 +148,12 @@ def simulate_embedding(n: int, seed: int = 0) -> SimDataset:
     )
 
 
-#: Organs in the synthetic atlas; region labels match the models in core/src/anatomy/models.
+#: Organs in the synthetic atlas, with their sampling weight, the cell types
+#: found there, and — for organs that have a detailed figure in the viewer —
+#: the anatomical regions cells are dissected from. Region labels are the ones
+#: the organ models in packages/core/src/anatomy/models recognise; liver and
+#: pancreas regions are qualified ("liver: right lobe") the way real atlases
+#: often are, which the viewer's matcher handles.
 ATLAS_ORGANS: dict[str, dict] = {
     "brain": {"w": 0.14, "regions": [
         "frontal lobe", "parietal lobe", "temporal lobe", "occipital lobe",
@@ -168,6 +202,13 @@ ATLAS_ORGANS: dict[str, dict] = {
 
 
 def simulate_atlas(n: int, seed: int = 0) -> SimDataset:
+    """A multi-organ atlas: tissues across the body, regions inside organs.
+
+    Each organ is an island of the embedding; inside it each cell type is a
+    blob, and inside a detailed organ each region shifts its cells slightly,
+    so a click on the left ventricle selects a coherent patch of the heart
+    island rather than salt-and-pepper noise.
+    """
     if n < 1:
         raise ValueError(f"n must be at least 1, got {n}")
     rng = np.random.default_rng(seed)
@@ -175,6 +216,7 @@ def simulate_atlas(n: int, seed: int = 0) -> SimDataset:
     weights = np.array([ATLAS_ORGANS[o]["w"] for o in organs], dtype=np.float64)
     weights /= weights.sum()
     counts = rng.multinomial(n, weights)
+    # Every organ keeps at least one cell once there are enough to go round.
     if n >= len(organs):
         for i in np.flatnonzero(counts == 0):
             j = int(np.argmax(counts))
@@ -190,10 +232,13 @@ def simulate_atlas(n: int, seed: int = 0) -> SimDataset:
                 regions.append(r)
     region_code = {r: i for i, r in enumerate(regions)}
 
+    # Organ islands on a jittered ring. The ring grows with the organ count so
+    # neighbouring islands sit about 3.5 island-widths apart: each island
+    # spreads roughly +-10 units, and the arc between centres is 2*pi*r/k.
     angles = np.linspace(0, 2 * np.pi, len(organs), endpoint=False) + rng.uniform(0, 0.2)
     ring = 6.2 * len(organs)
     radius = ring + rng.uniform(-3, 3, size=len(organs))
-    centers = np.stack([np.cos(angles) * radius, np.sin(angles) * radius], axis=1)
+    centres = np.stack([np.cos(angles) * radius, np.sin(angles) * radius], axis=1)
 
     xy = np.empty((n, 2), dtype=np.float32)
     ct = np.empty(n, dtype=np.uint16)
@@ -214,10 +259,11 @@ def simulate_atlas(n: int, seed: int = 0) -> SimDataset:
         region_offsets = rng.normal(0, 1.6, size=(len(regs), 2))
         scale = rng.uniform(0.7, 1.6, size=(k, 2))
         pts = rng.standard_normal((m, 2)) * scale[t]
-        xy[off:off + m] = (centers[o_idx] + type_offsets[t] + region_offsets[r] + pts).astype(np.float32)
+        xy[off:off + m] = (centres[o_idx] + type_offsets[t] + region_offsets[r] + pts).astype(np.float32)
         ct[off:off + m] = np.array([type_code[spec["types"][i]] for i in range(k)], dtype=np.uint16)[t]
         tissue[off:off + m] = o_idx
         region[off:off + m] = np.array([region_code[x] for x in regs], dtype=np.uint16)[r]
+        # A per-type differentiation gradient, so the numeric field has structure.
         pseudotime[off:off + m] = np.clip(
             (t / max(1, k - 1)) * 0.7 + rng.random(m) * 0.3, 0, 1
         ).astype(np.float32)
@@ -249,6 +295,7 @@ def simulate_atlas(n: int, seed: int = 0) -> SimDataset:
 def _grow_tree(
     rng: np.random.Generator, m: int
 ) -> tuple[np.ndarray, list[tuple[int, int]], list[int], list[int]]:
+    """Grow a branching tree in 2D by random walk with occasional splits."""
     nodes: list[np.ndarray] = [np.zeros(2, dtype=np.float64)]
     edges: list[tuple[int, int]] = []
     frontier: list[tuple[int, float]] = [(0, float(rng.uniform(0, 2 * np.pi)))]
@@ -271,6 +318,7 @@ def _grow_tree(
             frontier.append((cur, head + float(rng.uniform(0.4, 1.1))))
             frontier.append((cur, head - float(rng.uniform(0.4, 1.1))))
 
+    # If the walk stalled before m nodes, chain the remainder off the last node.
     while len(nodes) < m:
         cur = len(nodes) - 1
         nodes.append(nodes[cur] + rng.normal(0, 2.0, size=2))
@@ -282,6 +330,7 @@ def _grow_tree(
         degree[i] += 1
         degree[j] += 1
     leaves = [i for i in range(len(nodes)) if degree[i] == 1 and i != 0]
+    # Only keep branch points that really ended up with degree > 2.
     branch_points = sorted({i for i in branch_points if degree[i] > 2})
     return arr, edges, branch_points, leaves
 
@@ -296,6 +345,7 @@ def simulate_trajectory(
     nodes, edges, branch_points, leaves = _grow_tree(rng, m_target)
     m = int(nodes.shape[0])
 
+    # Scatter cells along edges so the cloud hugs the graph.
     eidx = rng.integers(0, len(edges), size=n)
     t = rng.random(n).astype(np.float32)
     ea = np.array([edges[i][0] for i in eidx])
@@ -305,6 +355,7 @@ def simulate_trajectory(
     on_edge = a + (b - a) * t[:, None]
     xy = (on_edge + rng.normal(0, 0.45, size=(n, 2))).astype(np.float32)
 
+    # Pseudotime = graph distance from the root, normalised, carried onto cells.
     adj: dict[int, list[tuple[int, float]]] = {i: [] for i in range(m)}
     for i, j in edges:
         w = float(np.linalg.norm(nodes[i] - nodes[j]))
@@ -324,6 +375,7 @@ def simulate_trajectory(
     node_pt = np.clip(node_pt, 0.0, 1.0)
     cell_pt = np.clip(node_pt[ea] * (1 - t) + node_pt[eb] * t, 0.0, 1.0)
 
+    # Cell type follows the branch a cell sits on: a lineage, not noise.
     branch_of = np.zeros(m, dtype=np.uint16)
     branch_set = set(branch_points)
     label = 0

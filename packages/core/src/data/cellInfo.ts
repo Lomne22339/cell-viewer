@@ -1,5 +1,16 @@
+/**
+ * A clicked cell's identity in the user's own file.
+ *
+ * The browser only knows a cell by its position in the shuffled chunks, which
+ * means nothing outside the viewer. Prep keeps each cell's source row and,
+ * when the source has one, its name (`obs_names`, a barcode), and the server
+ * answers per index. Fetching on click keeps a million barcode strings out of
+ * the page.
+ */
 export interface CellInfo {
+  /** Row number in the file that was prepared; null for older tiles. */
   row: number | null;
+  /** The cell's own name; null when the source had none. */
   id: string | null;
 }
 
@@ -8,7 +19,15 @@ export function cellInfoUrl(baseUrl: string, datasetId: string, index: number, v
   return `${baseUrl}/api/dataset/${encodeURIComponent(datasetId)}/cell/${index}${v}`;
 }
 
-/** A cell's source row and name, or null if unknown (409, old server, bad body); only abort rejects. */
+/**
+ * The source row and name of cell `index`, or null when they cannot be known.
+ *
+ * Null covers every answer that must not be shown as this cell's identity: a
+ * 409 (the dataset was regenerated, so the index now names another cell), an
+ * older server without the route, a malformed body and a network failure.
+ * The card then keeps showing what it already has. Only an abort rejects, so
+ * the caller can tell "superseded" from "unknown".
+ */
 export async function fetchCellInfo(
   baseUrl: string,
   datasetId: string,

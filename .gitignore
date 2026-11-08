@@ -1,19 +1,39 @@
-# Dependencies
-node_modules/
 .venv/
-
-# Build output
+.venv_win/
+node_modules/
 dist/
-
-# Generated datasets
 data/tiles/
-
-# Environment
 .env
-
-# Python
+.env.*
+!.env.example
 __pycache__/
 *.pyc
+.pytest_cache/
+test-results/
+playwright-report/
 
-# OS
+# Written by the capacity sweep on each run; the dated report is the record.
+docs/benchmarks/capacity-latest.md
+
+# Generated submission packages
+*.zip
+
+# Claude Code local state
+.claude/.last-green
+.claude/settings.local.json
+
+# Editor and OS leftovers, logs, coverage
 .DS_Store
+Thumbs.db
+*.log
+coverage/
+*.egg-info/
+.vscode/
+.idea/
+
+# Private feedback material: not published (see README, "Repository contents")
+HBDM-visualisation-feedback.pdf
+docs/superpowers/plans/2026-10-31-hbdm-feedback.md
+docs/superpowers/specs/2026-10-31-hbdm-feedback-design.md
+docs/verification/2026-10-31-hbdm-feedback-report.md
+.claude/agents/requirements-auditor.md

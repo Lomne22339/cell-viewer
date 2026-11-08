@@ -5,12 +5,23 @@ import type { CategoryFilter } from '@core/filter/categories';
 import type { Rgb } from '@core/theme/themes';
 import { esc } from './escape';
 
+/** Above this many levels a search box appears. */
 const SEARCH_THRESHOLD = 10;
-/** How long a click waits to see if it is half of a double-click (Plotly uses 300 ms). */
+/**
+ * How long a click waits to find out whether it is half of a double-click.
+ * Plotly uses 300 ms; operating systems allow up to about 500 ms, which the
+ * late-double-click repair below covers.
+ */
 const DOUBLE_CLICK_MS = 300;
+/** A double-click arriving this soon after a toggle undoes that toggle first. */
 const LATE_DOUBLE_CLICK_MS = 700;
 
 export interface LegendHandle {
+  /**
+   * Rebuilds the legend for a field. `counted` restricts the counts to the
+   * cells other filters leave visible; null counts every loaded cell.
+   * `background` adjusts swatches and the ramp exactly as the plot is drawn.
+   */
   update: (
     store: CellStore,
     field: string,
@@ -21,7 +32,16 @@ export interface LegendHandle {
   ) => void;
 }
 
-/** The legend and its category filter, Plotly-style: click toggles, double-click isolates. */
+/**
+ * The legend, and the control that filters by category (client item UI-3).
+ *
+ * It behaves like a Plotly legend because that is what the client uses in R:
+ * a click hides or shows a category, a double-click shows only that
+ * category, and a double-click on the only visible one brings everything
+ * back. Every level is listed — not just the largest twenty — with a search
+ * box once the list is long. Filters on other fields stay in force and are
+ * listed as removable chips, so "only T cells, coloured by tissue" works.
+ */
 export function createLegend(root: HTMLElement, filter: CategoryFilter): LegendHandle {
   const box = document.createElement('div');
   box.className = 'legend';
@@ -61,6 +81,8 @@ export function createLegend(root: HTMLElement, filter: CategoryFilter): LegendH
       .map(e => {
         const off = filter.isHidden(field, e.code);
         const label = esc(e.label);
+        // "only" is its own button beside the row, not inside it, so it is a
+        // separate keyboard stop and a valid (non-nested) control.
         return (
           `<div class="legend-item">` +
           `<button class="legend-row${off ? ' off' : ''}" data-code="${e.code}" aria-pressed="${!off}" ` +
@@ -76,6 +98,7 @@ export function createLegend(root: HTMLElement, filter: CategoryFilter): LegendH
 
   const shownCount = (): number => entries.filter(e => !filter.isHidden(field, e.code)).length;
 
+  /** The numeric legend uses the same background-adjusted ramp as the plot. */
   const rampGradient = (): string => {
     const r = rampFor(ramp, background);
     const steps = r.length / 3;
@@ -115,6 +138,7 @@ export function createLegend(root: HTMLElement, filter: CategoryFilter): LegendH
       chips();
   };
 
+  /** Where keyboard focus was, so a re-render can put it back. */
   const focusKey = (): string | null => {
     const el = document.activeElement as HTMLElement | null;
     if (!el || !box.contains(el)) return null;
@@ -131,7 +155,9 @@ export function createLegend(root: HTMLElement, filter: CategoryFilter): LegendH
   };
 
   const isolate = (f: string, code: number): void => {
-    // If the first click already toggled the row (slow double-click), undo it before isolating.
+    // If this double-click was slow enough that its first click already
+    // toggled the row, undo that toggle first, so the isolate sees the state
+    // the user double-clicked on.
     const late = lastToggle;
     if (late && late.field === f && late.code === code && performance.now() - late.at < LATE_DOUBLE_CLICK_MS) {
       filter.toggle(f, code);
@@ -167,7 +193,9 @@ export function createLegend(root: HTMLElement, filter: CategoryFilter): LegendH
     const row = target.closest<HTMLButtonElement>('.legend-row');
     if (!row) return;
     const code = Number(row.dataset.code);
-    // A second click (detail 2) turns the pending toggle into an isolate; keyboard toggles at once.
+    // A double-click arrives as two clicks; the second one (detail 2) turns
+    // the pending toggle into an isolate. Keyboard activation (detail 0)
+    // toggles at once.
     if (ev.detail >= 2) {
       if (pending) clearTimeout(pending);
       pending = null;
@@ -179,6 +207,8 @@ export function createLegend(root: HTMLElement, filter: CategoryFilter): LegendH
       return;
     }
     if (pending) clearTimeout(pending);
+    // Captured now: if the colour-by changes inside the double-click window,
+    // the toggle must still apply to the field that was clicked.
     const clickedField = field;
     pending = setTimeout(() => {
       pending = null;
@@ -206,6 +236,9 @@ export function createLegend(root: HTMLElement, filter: CategoryFilter): LegendH
       background = bg;
       ramp = rampName;
       if (f && k === 'categorical') {
+        // Long tails are common (hundreds of donors); order by total count so
+        // the populations that matter are on top and the order does not jump
+        // as filters change, and drop levels with no cells at all.
         const totals = legendEntries(s, f, null, bg);
         const shown = counted ? legendEntries(s, f, counted, bg) : totals;
         entries = totals
@@ -216,6 +249,8 @@ export function createLegend(root: HTMLElement, filter: CategoryFilter): LegendH
         entries = [];
       }
       render();
+      // A filter click rebuilds the rows; keep the user's place in a long
+      // list and keep keyboard focus on the control they were using.
       if (sameField) {
         const list = box.querySelector('.legend-list');
         if (list) list.scrollTop = scroll;
